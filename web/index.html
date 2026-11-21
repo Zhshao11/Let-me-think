@@ -17,7 +17,10 @@
     <main class="main">
       <header class="topbar">
         <span id="model-label" class="model-label"></span>
-        <button id="toggle-prompt" class="ghost">提示词构成</button>
+        <div class="topbar-actions">
+          <button id="toggle-prompt" class="ghost">提示词构成</button>
+          <button id="open-settings" class="ghost">设置</button>
+        </div>
       </header>
       <div id="prompt-panel" class="prompt-panel hidden"></div>
       <div id="transcript" class="transcript">
@@ -32,6 +35,32 @@
         <button id="send" type="submit">发送</button>
       </form>
     </main>
+  </div>
+  <div id="settings-overlay" class="overlay hidden">
+    <div class="settings-dialog">
+      <div class="settings-head">
+        <h2>设置</h2>
+        <button id="close-settings" class="ghost">关闭</button>
+      </div>
+      <p class="settings-note">密钥和接口地址只保存在服务端，不会回显到网页。留空即表示不修改该项。</p>
+      <form id="settings-form">
+        <label>API Key<input id="cfg-key" type="password" autocomplete="off" placeholder="留空保持当前密钥" /></label>
+        <label>Base URL<input id="cfg-base" type="text" autocomplete="off" placeholder="留空保持当前地址" /></label>
+        <label>模型名<input id="cfg-model" type="text" autocomplete="off" placeholder="例如 gpt-6.1-sol" /></label>
+        <label>System prompt
+          <select id="cfg-prompt">
+            <option value="sections">分段提示词</option>
+            <option value="off">裸模式（仅对话）</option>
+          </select>
+        </label>
+        <label>Reasoning effort（可选）<input id="cfg-reasoning" type="text" autocomplete="off" placeholder="留空不设置" /></label>
+        <div id="settings-msg" class="settings-msg"></div>
+        <div class="settings-actions">
+          <button type="button" id="cancel-settings" class="ghost">取消</button>
+          <button type="submit">保存</button>
+        </div>
+      </form>
+    </div>
   </div>
   <script src="/app.js"></script>
 </body>

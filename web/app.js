@@ -59,9 +59,52 @@ async function loadSessions() {
 
 async function loadConfig() {
   const cfg = await fetch('/api/config').then((r) => r.json());
-  $('#model-label').textContent = `${cfg.model} · ${cfg.baseUrl}`;
-  $('#config-badge').textContent = cfg.configured ? '服务端密钥已配置' : '密钥未配置：请填写 .env';
+  // Only the model name is shown; key and base URL never leave the server.
+  $('#model-label').textContent = cfg.model;
+  $('#config-badge').textContent = cfg.configured ? '服务端密钥已配置' : '密钥未配置：点右上角设置';
+  $('#cfg-model').placeholder = cfg.model || '例如 gpt-6.1-sol';
+  $('#cfg-prompt').value = cfg.systemPrompt || 'sections';
   sendBtn.disabled = !cfg.configured;
+}
+
+function openSettings() {
+  $('#settings-overlay').classList.remove('hidden');
+  $('#cfg-key').value = '';
+  $('#cfg-base').value = '';
+  $('#settings-msg').textContent = '';
+  $('#settings-msg').classList.remove('error');
+}
+function closeSettings() { $('#settings-overlay').classList.add('hidden'); }
+
+async function saveSettings(e) {
+  e.preventDefault();
+  const msg = $('#settings-msg');
+  msg.classList.remove('error');
+  msg.textContent = '保存中…';
+  const payload = {
+    apiKey: $('#cfg-key').value,
+    baseUrl: $('#cfg-base').value,
+    model: $('#cfg-model').value,
+    systemPrompt: $('#cfg-prompt').value,
+    reasoningEffort: $('#cfg-reasoning').value,
+  };
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? '保存失败');
+    $('#cfg-key').value = '';
+    $('#cfg-base').value = '';
+    msg.textContent = '已保存并生效';
+    await loadConfig();
+    setTimeout(closeSettings, 700);
+  } catch (err) {
+    msg.textContent = `保存失败：${err.message}`;
+    msg.classList.add('error');
+  }
 }
 
 function showSections(sections) {
@@ -153,6 +196,11 @@ $('#new-chat').onclick = () => {
   loadSessions();
 };
 $('#toggle-prompt').onclick = () => promptPanel.classList.toggle('hidden');
+$('#open-settings').onclick = openSettings;
+$('#close-settings').onclick = closeSettings;
+$('#cancel-settings').onclick = closeSettings;
+$('#settings-overlay').onclick = (e) => { if (e.target.id === 'settings-overlay') closeSettings(); };
+$('#settings-form').onsubmit = saveSettings;
 
 loadConfig();
 loadSessions();

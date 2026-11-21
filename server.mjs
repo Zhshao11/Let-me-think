@@ -1,7 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { config, assertConfigured } from './src/config.mjs';
+import { config, assertConfigured, saveConfig, publicConfig } from './src/config.mjs';
 import { buildPromptSections, renderSystemPrompt, sectionSummaries } from './src/prompt.mjs';
 import {
   createSession, ensureSession, appendPromptSections, appendMessage,
@@ -109,12 +109,23 @@ const server = http.createServer((req, res) => {
     return serveStatic(req, res, url);
   }
   if (req.method === 'GET' && url.pathname === '/api/config') {
-    return sendJson(res, 200, {
-      model: config.model,
-      baseUrl: config.baseUrl,
-      hasKey: Boolean(config.apiKey && !config.apiKey.startsWith('sk-your-key')),
-      configured: Boolean(config.apiKey && !config.apiKey.startsWith('sk-your-key')),
-    });
+    // Never expose the API key or base URL to the browser.
+    return sendJson(res, 200, publicConfig());
+  }
+  if (req.method === 'POST' && url.pathname === '/api/config') {
+    return (async () => {
+      try {
+        const body = await readBody(req);
+        const result = saveConfig({
+          apiKey: body.apiKey,
+          baseUrl: body.baseUrl,
+          model: body.model,
+          systemPrompt: body.systemPrompt,
+          reasoningEffort: body.reasoningEffort,
+        });
+        return sendJson(res, 200, { ok: true, ...result, ...publicConfig() });
+      } catch (err) { return sendJson(res, 400, { error: err.message }); }
+    })();
   }
   if (req.method === 'GET' && url.pathname === '/api/sessions') {
     return sendJson(res, 200, { sessions: listSessions() });
