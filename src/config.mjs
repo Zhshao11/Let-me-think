@@ -41,6 +41,8 @@ export const config = {
   model,
   sessionsDir,
   reasoningEffort: pick('REASONING_EFFORT', '') || null,
+  // 'sections' = sectioned system prompt; 'off' = send only the conversation.
+  systemPrompt: pick('SYSTEM_PROMPT', 'sections') === 'off' ? 'off' : 'sections',
 };
 
 export function assertConfigured() {

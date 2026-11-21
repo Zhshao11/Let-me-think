@@ -20,7 +20,7 @@ Works with any OpenAI-compatible chat-completions endpoint (OpenAI, DeepSeek, an
 ## What is here
 
 - **Server-side key**: `/api/config` only reports whether a key exists — never its value.
-- **Observable system prompt**: `src/prompt.mjs` assembles the prompt from named sections. The browser's "提示词构成" panel shows which sections were active and their sizes.
+- **Observable system prompt**: `src/prompt.mjs` assembles the prompt from named sections. The browser's "提示词构成" panel shows which sections were active and their sizes. Set `SYSTEM_PROMPT=off` in `.env` to send only the conversation history — no system message at all.
 - **Progress vs transcript**: text wrapped in `<progress>...</progress>` is routed to a one-line status area; reasoning content goes to its own event; only the answer body enters the transcript. Parsing survives tags split across network chunks.
 - **Append-only sessions**: every turn is written to `data/sessions/<uuid>.jsonl` with typed events (`session`, `prompt_sections`, `message`, `model_change`), message IDs and a parent chain. Survives restarts; list and reload from the sidebar.
 - **Streaming**: upstream SSE is forwarded as SSE with typed events (`meta`, `progress`, `reasoning`, `delta`, `done`, `error`).

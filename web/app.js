@@ -65,9 +65,9 @@ async function loadConfig() {
 }
 
 function showSections(sections) {
-  promptPanel.innerHTML = sections.map((s) =>
-    `<div class="section"><b>${s.id}</b> · ${s.title} · ${s.chars} chars</div>`
-  ).join('');
+  promptPanel.innerHTML = sections.length
+    ? sections.map((s) => `<div class="section"><b>${s.id}</b> · ${s.title} · ${s.chars} chars</div>`).join('')
+    : '<div class="section">无 system prompt，仅发送对话内容</div>';
 }
 
 async function send(text) {

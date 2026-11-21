@@ -54,8 +54,8 @@ async function handleChat(req, res) {
       return sendJson(res, 400, { error: 'Last message must be a user message' });
     }
 
-    const sections = buildPromptSections();
-    const systemPrompt = renderSystemPrompt(sections);
+    const rawMode = config.systemPrompt === 'off';
+    const sections = rawMode ? [] : buildPromptSections();
 
     let sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
     if (sessionId) {
@@ -63,7 +63,7 @@ async function handleChat(req, res) {
     } else {
       sessionId = createSession(config.model);
     }
-    appendPromptSections(sessionId, sections);
+    if (!rawMode) appendPromptSections(sessionId, sections);
     appendMessage(sessionId, 'user', cleanHistory.at(-1).content);
 
     res.writeHead(200, {
@@ -76,10 +76,9 @@ async function handleChat(req, res) {
     write('meta', { sessionId, model: config.model, sections: sectionSummaries(sections) });
     write('progress', { text: '正在组织回答…' });
 
-    const upstreamMessages = [
-      { role: 'system', content: systemPrompt },
-      ...cleanHistory,
-    ];
+    const upstreamMessages = rawMode
+      ? [...cleanHistory]
+      : [{ role: 'system', content: renderSystemPrompt(sections) }, ...cleanHistory];
 
     let assistantText = '';
     const abort = new AbortController();
