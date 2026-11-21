@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Let me think</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">Let me think</div>
+      <button id="new-chat" class="new-chat">+ 新会话</button>
+      <div id="session-list" class="session-list"></div>
+      <div id="config-badge" class="config-badge"></div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <span id="model-label" class="model-label"></span>
+        <button id="toggle-prompt" class="ghost">提示词构成</button>
+      </header>
+      <div id="prompt-panel" class="prompt-panel hidden"></div>
+      <div id="transcript" class="transcript">
+        <div class="empty-state">
+          <h1>想清楚了再说。</h1>
+          <p>本地运行的极简 Agent 运行时 · 密钥只在服务端</p>
+        </div>
+      </div>
+      <div id="progress" class="progress hidden"></div>
+      <form id="composer" class="composer">
+        <textarea id="input" rows="3" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button id="send" type="submit">发送</button>
+      </form>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
