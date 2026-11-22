@@ -1,4 +1,4 @@
-import { config, assertConfigured } from './config.mjs';
+import { config, assertConfigured, RESEARCH_MODEL } from './config.mjs';
 
 const PROGRESS_OPEN = '<progress>';
 const PROGRESS_CLOSE = '</progress>';
@@ -60,15 +60,32 @@ async function readError(response) {
   }
 }
 
-export async function streamChat({ messages, model, onDelta, onProgress, onReasoning, signal }) {
-  assertConfigured();
+export function chatRequestBody({ messages, model, reasoningEffort = config.reasoningEffort, maxCompletionTokens, tools = [], toolChoice }) {
+  if(model&&model!==RESEARCH_MODEL)throw new Error(`模型已固定为 ${RESEARCH_MODEL}，已阻止其他语言模型请求。`);
   const body = {
-    model: model || config.model,
+    model: RESEARCH_MODEL,
     messages,
     stream: true,
+    stream_options: { include_usage: true },
   };
-  if (config.reasoningEffort) body.reasoning_effort = config.reasoningEffort;
+  if (reasoningEffort) body.reasoning_effort = reasoningEffort;
+  if (maxCompletionTokens) body.max_completion_tokens = maxCompletionTokens;
+  if (tools.length) {
+    body.tools = tools;
+    body.tool_choice = toolChoice ?? 'auto';
+  }
+  return body;
+}
 
+export async function streamChat({ messages, model, onDelta = () => {}, onProgress = () => {}, onReasoning, signal,
+  reasoningEffort = config.reasoningEffort, maxCompletionTokens, tools = [], toolChoice, onRequest }) {
+  assertConfigured();
+  const body = chatRequestBody({ messages, model, reasoningEffort, maxCompletionTokens, tools, toolChoice });
+  const toolCalls = new Map();
+  let finishReason = null;
+  let usage = null;
+
+  onRequest?.(structuredClone(body));
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -93,7 +110,18 @@ export async function streamChat({ messages, model, onDelta, onProgress, onReaso
     if (!payload || payload === '[DONE]') return;
     let json;
     try { json = JSON.parse(payload); } catch { return; }
-    const delta = json?.choices?.[0]?.delta ?? {};
+    if (json.error) throw new Error(json.error.message ?? 'Upstream stream error');
+    if (json.usage) usage = json.usage;
+    const choice = json?.choices?.[0];
+    if (choice?.finish_reason) finishReason = choice.finish_reason;
+    const delta = choice?.delta ?? {};
+    for (const fragment of delta.tool_calls ?? []) {
+      const call = toolCalls.get(fragment.index) ?? { id: '', type: 'function', function: { name: '', arguments: '' } };
+      if (fragment.id) call.id = fragment.id;
+      if (fragment.function?.name) call.function.name += fragment.function.name;
+      if (fragment.function?.arguments) call.function.arguments += fragment.function.arguments;
+      toolCalls.set(fragment.index, call);
+    }
     if (typeof delta.content === 'string' && delta.content) {
       splitter.push(delta.content);
     }
@@ -116,4 +144,5 @@ export async function streamChat({ messages, model, onDelta, onProgress, onReaso
   buffer += decoder.decode();
   if (buffer.trim()) handleEvent(buffer);
   splitter.end();
+  return { toolCalls: [...toolCalls.values()], finishReason, usage };
 }

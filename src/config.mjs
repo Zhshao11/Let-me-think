@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_RESPONSE_MODE, responseModeSummaries } from './agent/policies.mjs';
+import { tokenModelInfo } from './agent/tokens.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const envPath = path.join(root, '.env');
@@ -28,6 +30,7 @@ function loadDotEnv(file) {
 const fileValues = loadDotEnv(envPath);
 const pick = (key, fallback = '') => process.env[key] ?? fileValues[key] ?? fallback;
 const hasKey = (value) => Boolean(value && !value.startsWith('sk-your-key'));
+export const RESEARCH_MODEL = 'gpt-6.1-sol';
 
 export const config = {
   root,
@@ -35,9 +38,18 @@ export const config = {
   port: Number(pick('PORT', '8787')),
   baseUrl: pick('OPENAI_BASE_URL', 'https://api.openai.com/v1').replace(/\/+$/, ''),
   apiKey: pick('OPENAI_API_KEY', ''),
-  model: pick('OPENAI_MODEL', 'gpt-4o-mini'),
+  // One model policy covers chat, review, compression, memory and papers.
+  // Legacy environment values cannot silently select another language model.
+  get model() { return RESEARCH_MODEL; },
   sessionsDir: path.resolve(root, pick('SESSIONS_DIR', './data/sessions')),
+  projectsDir: path.resolve(root, pick('PROJECTS_DIR', './data/projects')),
+  papersDir: path.resolve(root, pick('PAPERS_DIR', './data/papers') || './data/papers'),
+  paperPython: pick('PAPER_PYTHON', '') || path.join(root, '.venv-papers/bin/python'),
   reasoningEffort: pick('REASONING_EFFORT', '') || null,
+  reasoningSupported: pick('REASONING_SUPPORTED', 'true') !== 'false',
+  contextWindow: Number(pick('CONTEXT_WINDOW_TOKENS', '')) || null,
+  tokenizerEncoding: pick('TOKENIZER_ENCODING', ''),
+  automaticMemory: pick('AUTOMATIC_MEMORY', 'true') !== 'false',
   // 'sections' = sectioned system prompt; 'off' = send only the conversation.
   systemPrompt: pick('SYSTEM_PROMPT', 'sections') === 'off' ? 'off' : 'sections',
 };
@@ -55,9 +67,15 @@ const WRITABLE = {
   OPENAI_MODEL: 'model',
   SYSTEM_PROMPT: 'systemPrompt',
   REASONING_EFFORT: 'reasoningEffort',
+  REASONING_SUPPORTED: 'reasoningSupported',
+  CONTEXT_WINDOW_TOKENS: 'contextWindow',
+  TOKENIZER_ENCODING: 'tokenizerEncoding',
 };
 
 export function saveConfig(patch) {
+  if(patch.model!==undefined&&patch.model!==null&&String(patch.model).trim()&&String(patch.model).trim()!==RESEARCH_MODEL){
+    throw new Error(`模型已固定为 ${RESEARCH_MODEL}，不能使用其他语言模型。`);
+  }
   const current = loadDotEnv(envPath);
   const updates = {};
 
@@ -74,6 +92,9 @@ export function saveConfig(patch) {
     if (field === 'baseUrl') value = value.replace(/\/+$/, '');
     if (field === 'systemPrompt') value = value === 'off' ? 'off' : 'sections';
     if (field === 'reasoningEffort') value = value || '';
+    if (field === 'reasoningSupported' && !['true', 'false'].includes(value)) throw new Error('reasoningSupported must be true or false');
+    if (field === 'contextWindow' && value && (!Number.isSafeInteger(Number(value)) || Number(value) < 16000)) throw new Error('上下文窗口须填写服务商实际提供的 token 数，至少 16000。');
+    if (field === 'tokenizerEncoding' && !['', 'o200k_base', 'cl100k_base'].includes(value)) throw new Error('不支持该 tokenizer');
     current[envKey] = value;
     updates[field] = value;
   }
@@ -98,10 +119,17 @@ export function saveConfig(patch) {
 
   // Mutate the shared object so all modules see the new values without restart.
   for (const [field, value] of Object.entries(updates)) {
-    if (field === 'apiKey' || field === 'model' || field === 'baseUrl' || field === 'systemPrompt') {
+    if (field === 'model') continue;
+    if (field === 'apiKey' || field === 'baseUrl' || field === 'systemPrompt') {
       config[field] = value;
     } else if (field === 'reasoningEffort') {
       config.reasoningEffort = value || null;
+    } else if (field === 'reasoningSupported') {
+      config.reasoningSupported = value === 'true';
+    } else if (field === 'contextWindow') {
+      config.contextWindow = Number(value) || null;
+    } else if (field === 'tokenizerEncoding') {
+      config.tokenizerEncoding = value;
     }
   }
 
@@ -111,8 +139,16 @@ export function saveConfig(patch) {
 export function publicConfig() {
   return {
     model: config.model,
+    modelLocked: true,
     hasKey: hasKey(config.apiKey),
     configured: hasKey(config.apiKey),
     systemPrompt: config.systemPrompt,
+    defaultResponseMode: DEFAULT_RESPONSE_MODE,
+    responseModes: responseModeSummaries(),
+    reasoningSupported: config.reasoningSupported,
+    reasoningEffort: config.reasoningEffort,
+    contextWindow: config.contextWindow,
+    tokenizerEncoding: config.tokenizerEncoding,
+    tokenModel: tokenModelInfo(config.model, config.contextWindow, config.tokenizerEncoding),
   };
 }

@@ -1,67 +1,54 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Let me think</title>
-  <link rel="stylesheet" href="/style.css" />
-</head>
+<head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Let me think · 研究助手</title><link rel="icon" href="/favicon.ico?v=goat-1" sizes="any" /><link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=goat-1" /><link rel="apple-touch-icon" sizes="180x180" href="/favicon.png?v=goat-1" /><link rel="stylesheet" href="/vendor/katex/katex.min.css" /><link rel="stylesheet" href="/style.css" /></head>
 <body>
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="brand">Let me think</div>
-      <button id="new-chat" class="new-chat">+ 新会话</button>
-      <div id="session-list" class="session-list"></div>
-      <div id="config-badge" class="config-badge"></div>
-    </aside>
-    <main class="main">
-      <header class="topbar">
-        <span id="model-label" class="model-label"></span>
-        <div class="topbar-actions">
-          <button id="toggle-prompt" class="ghost">提示词构成</button>
-          <button id="open-settings" class="ghost">设置</button>
-        </div>
-      </header>
-      <div id="prompt-panel" class="prompt-panel hidden"></div>
-      <div id="transcript" class="transcript">
-        <div class="empty-state">
-          <h1>想清楚了再说。</h1>
-          <p>本地运行的极简 Agent 运行时 · 密钥只在服务端</p>
-        </div>
-      </div>
-      <div id="progress" class="progress hidden"></div>
-      <form id="composer" class="composer">
-        <textarea id="input" rows="3" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
-        <button id="send" type="submit">发送</button>
-      </form>
-    </main>
-  </div>
-  <div id="settings-overlay" class="overlay hidden">
-    <div class="settings-dialog">
-      <div class="settings-head">
-        <h2>设置</h2>
-        <button id="close-settings" class="ghost">关闭</button>
-      </div>
-      <p class="settings-note">密钥和接口地址只保存在服务端，不会回显到网页。留空即表示不修改该项。</p>
-      <form id="settings-form">
-        <label>API Key<input id="cfg-key" type="password" autocomplete="off" placeholder="留空保持当前密钥" /></label>
-        <label>Base URL<input id="cfg-base" type="text" autocomplete="off" placeholder="留空保持当前地址" /></label>
-        <label>模型名<input id="cfg-model" type="text" autocomplete="off" placeholder="例如 gpt-6.1-sol" /></label>
-        <label>System prompt
-          <select id="cfg-prompt">
-            <option value="sections">分段提示词</option>
-            <option value="off">裸模式（仅对话）</option>
-          </select>
-        </label>
-        <label>Reasoning effort（可选）<input id="cfg-reasoning" type="text" autocomplete="off" placeholder="留空不设置" /></label>
-        <div id="settings-msg" class="settings-msg"></div>
-        <div class="settings-actions">
-          <button type="button" id="cancel-settings" class="ghost">取消</button>
-          <button type="submit">保存</button>
-        </div>
-      </form>
-    </div>
-  </div>
-  <script src="/app.js"></script>
-</body>
-</html>
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="项目与对话侧栏">
+    <div class="brand"><span>Let me think</span><button id="collapse-sidebar" class="ghost" type="button" aria-label="收起侧栏" title="收起侧栏">‹</button></div>
+    <label class="small-label" for="project-select">当前项目</label>
+    <select id="project-select"><option value="">独立对话</option></select>
+    <div class="sidebar-actions"><button id="new-chat" class="new-chat">+ 新对话</button><button id="new-project" class="ghost">新项目</button></div>
+    <button id="toggle-trash" class="ghost trash-toggle">回收站</button>
+    <div id="session-list" class="session-list"></div>
+    <div class="config-badge" id="config-badge"></div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><div class="topbar-heading"><button id="toggle-sidebar" class="ghost" type="button" aria-label="展开侧栏" aria-controls="sidebar" title="展开侧栏">☰</button><span id="model-label" class="model-label"></span></div><div class="topbar-actions"><button id="open-console" class="ghost">上下文记忆控制台</button><button id="open-settings" class="ghost">设置</button></div></header>
+    <nav class="workspace-tools" aria-label="右侧辅助窗口">
+      <button id="open-side-chat" class="library-launcher" type="button" disabled aria-label="子对话" aria-controls="side-chat" aria-expanded="false" title="打开或收起子对话"><span>子对话</span></button>
+      <button id="open-library" class="library-launcher" type="button" disabled aria-label="论文补库" aria-controls="side-chat" aria-expanded="false" title="打开或收起论文补库"><span>论文补库</span><small id="library-launcher-status"></small></button>
+    </nav>
+    <div id="context-status" class="context-status" role="status">直接告诉我你的研究背景、问题和实验进展，我会自动整理记忆。</div>
+    <button id="context-usage" class="context-usage" type="button" aria-label="查看上下文窗口用量"><span id="context-usage-label">正在计算上下文…</span><span id="context-usage-bar" class="window-track" aria-hidden="true"></span></button>
+    <div id="transcript" class="transcript"></div>
+    <div id="progress" class="progress hidden" role="status"></div>
+    <form id="composer" class="composer"><div class="composer-main"><div id="paper-status" class="paper-status" role="status"></div><textarea id="input" aria-label="消息" rows="3" placeholder="说说你在研究什么，或者现在遇到了什么问题…"></textarea><div class="composer-footer"><div class="composer-options"><select id="response-mode" aria-label="回答方式"><option value="concise">简洁</option></select><button id="attach-paper" class="ghost paper-button" type="button">添加论文</button><input id="paper-file" type="file" accept="application/pdf,.pdf" hidden multiple /></div><span>Enter 发送 · Shift+Enter 换行</span></div></div><button id="send" type="submit" disabled>发送</button></form>
+  </main>
+</div>
+<dialog id="new-project-dialog" class="project-dialog compact-dialog"><div class="settings-head"><h2>新建项目</h2><button class="ghost" data-close="new-project-dialog">关闭</button></div><form id="new-project-form" class="project-form"><label>项目名称<input id="project-name" required maxlength="80" /></label><p class="settings-note">背景、研究问题和实验进展直接在对话中告诉我即可。</p><div class="settings-actions"><button type="submit">创建</button></div><p id="project-error" class="settings-msg" role="status"></p></form></dialog>
+<dialog id="settings-dialog" class="project-dialog compact-dialog"><div class="settings-head"><h2>设置</h2><button class="ghost" data-close="settings-dialog">关闭</button></div><form id="settings-form" class="project-form">
+<label>API Key<input id="cfg-key" type="password" autocomplete="off" placeholder="留空保持当前密钥" /></label><label>接口地址<input id="cfg-base" autocomplete="off" placeholder="留空保持当前地址" /></label><label>模型（固定）<input id="cfg-model" readonly value="gpt-6.1-sol" title="对话、记忆、压缩和论文提取统一使用此模型" /></label>
+<label>模型上下文窗口（token）<input id="cfg-window" type="number" min="16000" placeholder="填写服务商给出的实际值；未知则留空" /></label>
+<label>Tokenizer<select id="cfg-tokenizer"><option value="">自动识别；未知模型使用估算</option><option value="o200k_base">o200k_base（服务商已确认）</option><option value="cl100k_base">cl100k_base（服务商已确认）</option></select></label>
+<label>推理参数<select id="cfg-reasoning"><option value="true">跟随回答方式</option><option value="false">接口不支持，不发送</option></select></label>
+<label>研究助手规则<select id="cfg-prompt"><option value="sections">启用</option><option value="off">关闭</option></select></label>
+<p id="settings-msg" class="settings-msg" role="status"></p><div class="settings-actions"><button type="submit">保存</button></div></form></dialog>
+<dialog id="memory-console" class="project-dialog memory-console">
+  <div class="settings-head"><h2>上下文记忆控制台</h2><button class="ghost" data-close="memory-console">关闭</button></div>
+  <p class="settings-note">记忆会从对话中自动整理。项目记忆在同项目共享，对话记忆只属于当前对话。</p>
+  <div id="memory-window" class="memory-budget" aria-label="上下文窗口用量"></div>
+  <nav class="console-tabs" aria-label="记忆范围"><button data-tab="project" class="active">项目记忆</button><button data-tab="conversation">对话记忆</button><button data-tab="papers">论文资料</button><button data-tab="history">对话与压缩</button><button data-tab="input">本轮输入</button></nav>
+  <p id="console-message" class="settings-msg" role="status"></p>
+  <section id="memory-content"></section>
+</dialog>
+<dialog id="side-chat" class="side-chat" aria-labelledby="side-chat-title">
+  <header class="settings-head"><h2 id="side-chat-title">子对话</h2><button id="close-side-chat" class="ghost" type="button">收起</button></header>
+  <p class="side-chat-note">承接开启时的上下文。这里的讨论和检索结果只留在子对话，不写入主对话或项目记忆。</p>
+  <div class="side-chat-toolbar"><select id="side-chat-select" aria-label="选择子对话"></select><button id="new-side-chat" class="ghost" type="button">新开子对话</button><button id="side-chat-trash" class="ghost" type="button">回收站</button><button id="delete-side-chat" class="ghost" type="button">删除</button></div>
+  <p id="side-chat-usage" class="console-description" aria-live="polite"></p>
+  <div id="side-chat-transcript" class="side-chat-transcript" role="log" aria-label="子对话消息"></div>
+  <p id="side-chat-progress" class="console-description" role="status"></p>
+  <form id="side-chat-composer" class="side-chat-composer"><label class="side-chat-input-label" for="side-chat-input">子对话消息</label><textarea id="side-chat-input" rows="3" placeholder="在这里查文献、解释概念，或展开一个旁支问题…"></textarea><div class="side-chat-footer"><select id="side-chat-mode" aria-label="子对话回答方式"><option value="concise">简洁</option><option value="review">严格评审</option><option value="experiment">实验分析</option><option value="detailed">详细</option></select><span>独立保存 · 不自动回传</span><button id="side-chat-send" type="submit">发送</button></div></form>
+</dialog>
+<script src="/vendor/markdown-it.min.js"></script><script src="/markdown.js"></script><script src="/app.js"></script><script src="/context-usage.js"></script><script src="/papers.js"></script><script src="/memory-console.js"></script><script src="/side-chat.js"></script><script src="/workspace-layout.js"></script>
+</body></html>

@@ -6,9 +6,21 @@
   "description": "A minimal local-first agent runtime with server-side API keys and observable prompt sections.",
   "scripts": {
     "start": "node server.mjs",
-    "dev": "node --watch server.mjs"
+    "dev": "node --watch server.mjs",
+    "test": "node --test",
+    "eval:research": "node scripts/research-smoke.mjs",
+    "setup:papers": "uv venv --allow-existing .venv-papers --python 3.12 && uv pip install --python .venv-papers/bin/python -r requirements-papers.txt"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.2",
+    "fast-xml-parser": "^5.12.1",
+    "js-tiktoken": "^1.0.21",
+    "katex": "^0.19.1",
+    "markdown-it": "^15.0.3",
+    "markdown-it-cjk-friendly": "^3.0.0",
+    "markdown-it-texmath": "^1.0.0"
   }
 }

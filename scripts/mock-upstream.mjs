@@ -16,6 +16,26 @@ const server = http.createServer(async (req, res) => {
   const send = (text, field = 'content') => {
     res.write(`data: ${JSON.stringify({ choices: [{ delta: { [field]: text } }] })}\n\n`);
   };
+  if(payload.tool_choice?.function?.name==='proposal_route'){
+    send([{index:0,id:'route',type:'function',function:{name:'proposal_route',arguments:JSON.stringify({route:'direct',objective:'',queries:[],allowBackground:false})}}],'tool_calls');
+    res.write('data: [DONE]\n\n');return res.end();
+  }
+  if (payload.messages?.[0]?.content.includes('你是研究记忆候选项提取器')) {
+    const sources = JSON.parse(userText);
+    const source = sources.find((message) => message.role === 'user');
+    send(JSON.stringify(source ? [{ kind: 'hypothesis', text: `模拟候选（未经验证）：${source.content.slice(0, 80)}`, sourceMessageIds: [source.id] }] : []));
+    res.write('data: [DONE]\n\n');
+    return res.end();
+  }
+  if (payload.messages?.[0]?.content.includes('你是会话记忆整理器')) {
+    const { previous, additions } = JSON.parse(userText);
+    const data = { userReports: [], assistantHypotheses: [], userDecisions: [], openQuestions: [], ...previous };
+    data.userReports = [...data.userReports, ...additions.filter((message) => message.role === 'user')
+      .map((message) => ({ text: message.content.slice(0, 80), sourceIds: [message.id] }))].slice(-4);
+    send(JSON.stringify(data));
+    res.write('data: [DONE]\n\n');
+    return res.end();
+  }
   send('正在查看这个问题…\n', 'reasoning_content');
   send('<progress>正在核对要点…</progress>');
   const parts = [`收到：「${userText}」\n`, '这是 mock 上游的流式回复。', '\n进度通道与正文已分离。'];

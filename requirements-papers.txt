@@ -1,0 +1,2 @@
+docling==2.151.1
+httpx[socks]>=0.28,<1

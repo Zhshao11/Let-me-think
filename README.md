@@ -1,55 +1,213 @@
 # Let me think
 
-A minimal, local-first agent runtime. Bring your own API key; the key stays on the server and never reaches the browser.
+本地运行的图像匹配科研助手，使用 OpenAI-compatible Chat Completions 接口。密钥只保存在服务端，不返回浏览器。
 
-This project studies the design patterns of modern agent products — observable prompt sections, a separate progress channel, append-only session logs — with a clean-room implementation. It is not derived from any product's source code.
+所有语言模型调用统一锁定为 `gpt-6.1-sol`，覆盖聊天、独立复核、历史压缩、记忆整理与论文信息提取。设置页只读显示模型，接口拒绝其他模型；旧环境变量不能切换模型。Docling 继续负责本地 PDF 版面/OCR 解析。
 
-## Run
+日常使用只需选择项目并聊天。研究背景、主题、痛点、实验进展和交流偏好由模型自动整理，统一在“上下文记忆控制台”查看、编辑和删除。已接入第一版论文上传、解析、研究信息提取、学术搜索与原文检索；实验代码/日志读取和运行仍未接入。
+
+工作区支持拖拽调整：左侧栏拖右边缘改变宽度，点击栏内收起按钮或顶部菜单按钮可收起/展开；主对话和子对话的输入框拖上方短横条改变高度。右侧统一放置“子对话”和“论文补库”，点击打开，再点同一入口收起；宽屏留足空间时与主对话并排，空间不足时浮在右侧。辅助窗口可拖左边缘调宽、左下角调宽高，也可点击“放大/还原”；收起不会取消正在执行的子对话，也不清除草稿。
+
+上下文控制台、设置和新建项目窗口可拖右下角调整大小，也提供放大/还原。尺寸与桌面侧栏的收起状态保存在当前浏览器，刷新后保留；窗口变小时自动限制边界。拖拽条支持方向键微调（Shift加快），双击或Home恢复默认尺寸。窄屏侧栏以抽屉方式打开，点击空白处或收起按钮关闭；Esc可收起右侧辅助窗口。
+
+聊天消息支持 Markdown 标题、加粗、列表、表格、代码块、引用和链接，历史记录与流式输出使用同一渲染器，并兼容中文标点紧挨加粗标记的写法。原始消息仍以 Markdown 文本保存；浏览器依赖由本机服务提供，无需 CDN。原始 HTML 不执行，外部图片显示为链接。
+
+主对话、普通子对话和论文补库窗口支持 KaTeX 公式预览：`$...$`、`\(...\)` 为行内公式，`$$...$$`、`\[...\]` 为独立公式，支持分式、上下标、矩阵和 `aligned` 多行对齐。公式完整到达后随流式 Markdown 更新，重新打开旧消息也会渲染；过宽的独立公式可横向滚动。代码片段与代码块保留源码；未闭合或不支持的 LaTeX 会保留可读文本，不中断消息。渲染器、样式与字体均由本地服务提供，公式不发送到第三方渲染服务。
+
+每条助手回复下方的“复制源码”复制保存的完整 Markdown，保留公式原始 LaTeX 与分隔符。也可在同一条回复中选中公式或含公式的文字，按 ⌘C / Ctrl+C，剪贴板中的公式会转换为 `$...$` / `$$...$$` 源码；选中公式的一部分会复制整个公式。纯文字、代码及输入框保持普通复制行为。主对话与子对话共用此功能。
+
+## 运行
+
+Node.js 22.13+（使用内置 SQLite；本机在 Node 26 验证）：
 
 ```bash
+npm ci
 cp .env.example .env
-# edit .env: set OPENAI_API_KEY, optionally OPENAI_BASE_URL and OPENAI_MODEL
+# 设置 OPENAI_API_KEY，按需设置 OPENAI_BASE_URL 和 OPENAI_MODEL
 npm start
-# open http://127.0.0.1:8787
+# http://127.0.0.1:8787
 ```
 
-Node.js 20+ required. No npm dependencies: everything uses Node built-ins.
+也可以在网页“设置”配置连接。已有密钥和接口地址不会返回网页，留空保持原值。
 
-Works with any OpenAI-compatible chat-completions endpoint (OpenAI, DeepSeek, and most gateways). If your provider uses a different path, set `OPENAI_BASE_URL` to its API root.
-
-## What is here
-
-- **Server-side key, web settings panel**: click "设置" in the top bar to fill in API key, base URL, model, and prompt mode. Saved values go to `.env` on the server and take effect without a restart. The browser never receives the key or base URL — `GET /api/config` returns only `model`, `hasKey`, and `systemPrompt`. Empty key/base URL fields leave the current values unchanged.
-- **Observable system prompt**: `src/prompt.mjs` assembles the prompt from named sections. The browser's "提示词构成" panel shows which sections were active and their sizes. Set `SYSTEM_PROMPT=off` in `.env` to send only the conversation history — no system message at all.
-- **Progress vs transcript**: text wrapped in `<progress>...</progress>` is routed to a one-line status area; reasoning content goes to its own event; only the answer body enters the transcript. Parsing survives tags split across network chunks.
-- **Append-only sessions**: every turn is written to `data/sessions/<uuid>.jsonl` with typed events (`session`, `prompt_sections`, `message`, `model_change`), message IDs and a parent chain. Survives restarts; list and reload from the sidebar.
-- **Streaming**: upstream SSE is forwarded as SSE with typed events (`meta`, `progress`, `reasoning`, `delta`, `done`, `error`).
-
-## Layout
-
-```
-server.mjs              HTTP routes and SSE orchestration
-src/config.mjs          env + .env loading
-src/prompt.mjs          sectioned system prompt
-src/session.mjs         JSONL session store
-src/upstream.mjs        OpenAI-compatible streaming client
-web/                    dependency-free chat UI
-scripts/mock-upstream.mjs  local SSE mock for testing without API credits
-```
-
-## Test without spending credits
+论文解析使用独立 Python 3.12 环境，安装 `uv` 后执行一次：
 
 ```bash
-node scripts/mock-upstream.mjs          # terminal 1, listens on :8788
-# set OPENAI_BASE_URL=http://127.0.0.1:8788/v1 in .env
-npm start                               # terminal 2
+npm run setup:papers
 ```
 
-## Next steps
+首次解析需要下载 Docling 模型；依赖和模型保留本机。PDF 在本地解析，提取出的文字通过当前配置的模型接口生成研究信息。
 
-The placeholders in `src/prompt.mjs` mark where the interesting parts plug in:
+## 对话与记忆
 
-1. **Tools** — register a tool registry, expose it via `tools` in the upstream request, and handle `tool_calls` in the SSE loop.
-2. **Skills** — load skill documents from disk, put a brief catalog in the prompt, fetch full instructions on demand.
-3. **Memory** — write a `personalization` / `persistent_memory` section with a token budget.
-4. **Context budget** — trim or summarize old messages before they exceed the model's window.
+新建项目只填写名称，背景直接在聊天中描述，无需填写卡片或逐条确认候选记忆。
+
+- **项目记忆**：同一项目内共享，按研究主题与类别组织；包括身份与偏好、研究主题、研究痛点、实验进展、决定与计划。
+- **对话记忆**：只属于当前对话，保留更细的讨论分支、临时约束、排错信息和未采纳的方案。
+- **自动整理**：成功回答后提取增量信息，压缩历史时也会同步整理。模型判断范围、类别和修订关系，区分用户报告、假设与建议；失败保留原文，不阻断已经完成的回答。
+- **手动控制**：控制台可修改主题、类别和内容，查看来源，删除记忆。手动编辑优先于自动更新；删除的信息键不会自动恢复。
+- **隔离**：项目之间不共享记忆，对话记忆不进入其他对话。独立对话仅使用自己的记忆。
+
+会话删除进入回收站，可恢复。删除期间，其派生记忆停止用于上下文与工具；恢复后重新可用。记忆删除与关闭某条消息只控制对应条目和来源，不会从其他已经引用相同信息的消息中执行语义擦除。
+
+已有项目卡片和已确认记忆会迁入新记忆系统，保留来源与用户修改优先级。旧接口保留兼容，主界面不再展示旧工作流。此服务是本地单用户应用，项目隔离不是多用户授权系统。
+
+## 上下文记忆控制台
+
+控制台提供项目记忆、对话记忆、论文资料、对话与压缩、本轮输入。
+
+“对话与压缩”可查看摘要，启用或停用历史消息，修正消息内容，选择自动整理、保留原文或自写摘要。修正仅影响后续上下文，原始 JSONL 不变。停用或修正来源会使相关未手动编辑的记忆停止读取。自写摘要替代直接输入的历史，但原文仍可能通过已启用的只读检索访问。
+
+“本轮输入”显示当前材料与最近实际请求。已发送请求只读，修改作用于下一轮。发生压缩时，发送前查看的是估算草稿，实际请求记录保留最终材料。兼容 API 还支持准确首个请求预览，但通常无需手动操作。
+
+## 分层压缩与 token 预算
+
+使用 `js-tiktoken` 计算文本 token，加上估算的消息封装和工具定义开销；不再用 UTF-8 字节数冒充 token。实际输入和输出 token 以接口返回的 `usage` 为准。接口未返回用量时明确显示未知。
+
+模型窗口优先使用 `CONTEXT_WINDOW_TOKENS` 明确配置，其次使用已知型号规格；未知型号不填造窗口和使用百分比。未知型号分词器默认使用 `o200k_base` 并标明替代估算，可通过 `TOKENIZER_ENCODING` 指定服务商确认的编码。目前没有从网关自动发现窗口与 tokenizer 的能力。
+
+`gpt-6.1-sol` 自动使用 [官方 API 规格](https://developers.openai.com/api/docs/models/gpt-6.1-sol)中的 **1,050,000 tokens** 窗口；Codex / ChatGPT Work 的默认窗口属于另一产品设置。发送前对该模型仍使用替代分词估算。若你的网关另有限制，可用窗口配置覆盖。
+
+聊天框上方实时显示预计输入 / 模型窗口与百分比，输入问题、切换对话或回答方式后更新。控制台的用量条区分输入、输出预留、工具与复核预留、安全余量和剩余空间，同时显示具体压缩阈值与最近一次接口实际用量。百分比表示当前一次请求占窗口的比例，不累计相加历史各次接口调用。
+
+已知窗口先扣除输出预算、安全余量、工具及复核空间，再计算历史可用空间。未知窗口暂用 24000 token 输入工作预算，这不是模型真实容量。
+
+| 原始材料占可用预算 | 自动策略 |
+| --- | --- |
+| 小于 55% | 保留完整对话 |
+| 55%–80% | 整理较早对话，减少重复 |
+| 80%–93% | 按研究主题合并，保留实验条件 |
+| 93% 及以上 | 保留关键事实、决定、未解问题和近期原文 |
+
+摘要包含用户报告、助手假设、用户决定、待解问题，逐项保留来源 ID。用户更正覆盖旧值；不能将助手意见变成用户实验结果。压缩保留原始记录。模式切换时会整理旧模式历史，减少旧格式影响；不能保证完全消除历史风格。
+
+摘要是有损的模型输出，需要时应核对来源。提取和压缩会增加调用与延迟。较长消息按 token 分批整理，保留同一原文来源；整理失败保留原文，不会静默截断。
+
+## 回答方式
+
+### 子对话
+
+在已有主对话右上角点击“子对话”，即可在当前页面打开独立窗口，用来查文献、解释概念和讨论旁支问题。首次打开自动创建一个分支，也可以继续新开多个分支、切换记录，关闭窗口后返回主线。子对话独立保存，删除后可在窗口内回收站恢复。
+
+创建时冻结父对话允许使用的历史及研究记忆，遵守被排除/修订的消息、手动摘要、补充上下文和来源读取限制。后续主对话的新消息与记忆变化不会自动进入既有分支；需要最新背景时新开一个子对话。主对话删除后所属子对话不可访问，恢复主对话后恢复访问。
+
+子对话自己的消息、模型请求记录及压缩摘要只保存在分支内，不加入父对话历史，不生成项目记忆或对话记忆，也不会被其他分支继承。可以只读搜索学术来源及当前项目已有论文；项目记忆实时检索、论文入库及补库工具不向子对话开放，服务端也拒绝把分支消息提取成项目记忆。需要将论文加入知识库时回主对话明确发起。子对话有自己的上下文预算和实际用量显示，模型同样固定为 `gpt-6.1-sol`。
+
+接口：`GET/POST /api/sessions/:parentId/side-conversations?projectId=...`；回收站列表附加 `deleted=true`。分支使用既有聊天、删除/恢复和上下文检查接口，其 `sideContext` 中保存只读快照；普通会话列表只返回主对话。
+
+### 论文补库侧边窗口
+
+主对话旁的“论文补库”按钮打开一个专用子对话，集中展示后台阶段、新增/复用/缺全文/失败数量、论文关联理由和用量，并提供暂停与继续按钮。主消息区不渲染这些卡片，也不显示补库处理状态条；关闭窗口后任务继续运行，按钮提示是否有任务进行中。
+
+这个窗口复用子对话的聊天、独立历史、上下文预算和记忆隔离。可以直接问“现在完成了吗”“为什么这篇相关”“失败在哪里”，Agent 用 `paper_library_job` 查询所属主对话的实时任务，必要时读取原文。也可以说“暂停补库”或“继续刚才的任务”。可以直接在本窗口新增补库、改变研究方向、补齐背景并继续，均使用窗口内真实用户消息作为来源。
+
+专用子对话保存 `sideContext.purpose=library`；创建时用 `{purpose:"library"}`，列表用 `purpose=library` 查询。任务归属父对话，但来源消息、研究状态快照和模型请求日志保存在实际发起任务的补库子对话中。普通子对话列表不混入补库讨论。专用补库子对话具有发起、收录、查看、暂停、继续和调整任务的权限；跨父对话、跨项目及普通子对话均不能借此访问任务或私有说明。补库追问不会写入父对话、项目记忆或对话记忆。
+
+### 模式
+
+模式开关替换固定提示词槽位，同时控制推理强度、完成预算、可用工具、调用上限和独立复核次数。
+
+模式不再强制回复模板或固定章节。执行器根据论文工具的实际返回维护任务状态（后台接手、缺少信息、已有结果、暂停或失败），将状态用于本轮后续行动和答复检查，并记录 `task_state` 事件。即使选择“实验分析”，启动补库时也只简短说明任务和范围；真正问实验诊断时再分析机制与验证方法。用户同一轮提出的其他实质问题仍需回应。
+
+独立复核保持真实用户消息不变，只在内部检查本轮目标、工具状态和答复准确性；不会追加一条“评审候选答案”的模拟用户请求。研究判断仍依据来源说明不确定性，但不再逐次套用支持等级、置信度和证据分类标签。
+
+| 模式 | 用途 | 推理请求 | 输出预算 | 工具调用上限 | 独立复核 |
+| --- | --- | --- | --- | --- | --- |
+| 简洁 | 日常讨论，先说结论 | low | 2048 | 0 | 0 |
+| 严格评审 | 审查主张、反例和公平对照 | high | 6144 | 2 | 1 |
+| 实验分析 | 定位现象，设计最小验证实验 | high | 6144 | 2 | 1 |
+| 详细 | 展开机制、条件与证据链 | medium | 8192 | 3 | 0 |
+
+`reasoning_effort` 的支持取决于接口，不代表可精确控制内部思考步数。不支持时在设置关闭；其他流程仍生效。关闭研究助手规则会绕过专家协议和模式工具，但仍受作用域与上下文预算约束。
+
+绑定项目并启用材料检索时，各模式可使用论文搜索、原文读取、学术搜索、arXiv 收录工具，自主工具调用上限至少 3 次，运行预留至少 12000 tokens，另支持下面的方案查库流程；这时简洁模式也支持基于论文回答。其他模式原有历史/记忆检索权限保持原规则。未绑定项目或关闭检索时不提供论文工具。
+
+### 具体方案的查库流程
+
+给出结构、损失、特征、训练或更新机制等具体改进方案时，运行时执行独立工作流：结构化判断当前任务 → 最多两组本地检索 → 读取最多两篇论文的方法原文 → 评估参考价值与知识缺口 → 生成答复。纯解释、任务控制等直接进入普通答复。步骤由程序调度，不能只靠最终回答模型自行决定是否调用工具；结构或来源校验失败会重试一次，仍失败则不输出未经流程处理的草稿。
+
+查库遵循**有用则用、无用则不用**：不设引用数量，不要求找到本地依赖点。所有论文都不适用时可以全部舍弃，仍可结合模型自身知识和用户背景提出新设计。论文机制与针对用户结构的改法需要区分，不伪造来源。没有本地命中本身不触发补库。
+
+只有明确存在值得查证的知识问题时，流程记录细致方向、英文检索词与原因，独立提交最多新增三篇的持久化后台任务。主对话不搜索网络、不下载、不解析，也不轮询该任务；继续给建议，阶段和结果显示在侧边“论文补库”。同一来源轮次幂等，同一对话中相同缺口与库版本去重。用户要求只看本地、不要联网或补库时不派发；普通只读子对话也不自动入库。
+
+工作流的检索/读取最多四次，不挤占当前模式的自主调用额度；执行前仍校验实际 token 预算，工具结果有界。任务路由和参考评估的实际请求分别记录为 `proposal_route`、`proposal_assessment`，与回答、复核及用量一起可在上下文控制台核对。首个请求预览包含真实的路由步骤。研究目标识别和参考价值判断仍由模型完成；本地检索仍是关键词全文检索，没有语义召回保证。暂未增加旧实验尝试的自动检索流程。
+
+## 论文处理与 RAG
+
+在聊天框下点击“添加论文”上传 PDF（最多 35 MB），或者在对话中提供 arXiv 论文链接并要求阅读/收录。两种入口统一进入：保存原 PDF → Docling 解析 → 提取研究信息 → 校验来源 → 写入 SQLite 与全文索引。后台串行执行，显示状态，失败可在控制台重试，重启会恢复未完成任务。PDF 下载先使用 arXiv 主站，暂时性网络错误/超时后尝试 export.arxiv.org 官方入口；响应头最多等待20秒，单次完整传输最多180秒，仍受35 MB限制。
+
+论文档案包含摘要、研究问题、方法、作者声称的贡献、实验证据、局限。每项带原文块 ID 和真实页码，可查看来源文本、原页图片和 PDF。论文结果与用户实验、项目记忆分开；自动提取不代表独立验证或新颖性认定。
+
+存储采用 **本地文件 + SQLite FTS5**：文件存 PDF、解析 JSON/Markdown、页面和图片；数据库存论文信息、任务状态、研究档案及可重建全文索引。当前是全文检索 RAG，尚未接入 embedding 或专门向量数据库。相同项目内按 PDF SHA-256 去重；不同内容/版本保留不同记录，不跨项目复用私有材料。
+
+论文工具：`paper_search` 查本项目资料与状态，`paper_read` 按页码或来源 ID 读取，`paper_search_online` 查 arXiv，失败时换 Semantic Scholar、OpenAlex；查具体方法默认按相关性，查近期论文时使用 `recent=true` 按提交/发表日期排序。搜索只返回元数据和摘要，重要元数据仍需核对原始记录。`paper_import` 第一版只获取 arXiv HTTPS PDF，其他来源请上传，未获取全文时不声称已经阅读。
+
+### 在对话中按研究主题补库
+
+直接说：“根据我们刚才讨论的研究主题和实验瓶颈，帮我补充最多 3 篇论文到知识库，说明每篇针对什么问题。”Agent 调用 `paper_expand_library`，在后台读取当前对话和允许的研究记忆，规划检索、筛选候选、核对来源、去重、下载和解析全文，再根据真实原文给出关联理由、实验用途及适用限制。所有语言模型阶段均使用 `gpt-6.1-sol`。
+
+默认最多新增 3 篇，每次可指定 1–5 篇；最多 4 组检索问题、20 篇候选和新增篇数两倍的下载尝试。推荐/搜索请求不会自动创建批量入库任务；研究主题不明时在对话中追问。自动获取支持 arXiv，其他来源显示“需提供 PDF”，上传后可继续任务核对。
+
+进度与结果集中显示在右侧“论文补库”窗口，主对话只保留简短启动确认，分别报告新增完成、复用、缺全文、关联不足和失败。可点“暂停补库/继续补库”，或在聊天中说“停止补库”“继续刚才任务”“调整为只看某方向”。调整方向创建关联的新任务并保留原结果。任务、候选、来源与实际模型用量保存在 SQLite，重启从检查点恢复；不会重复已经完成的搜索和下载。达到本次下载上限后需要发起新的补库请求。
+
+论文事实在项目内共享，研究背景、瓶颈及关联理由仅在发起任务的对话和它专属的补库子对话可见；API 同时校验项目与会话。禁用来源读取或原始聊天模式时不能启动补库；更改/删除已使用的上下文或研究记忆会暂停后续操作，继续时重新整理允许的材料。加入论文库后，聊天仍按需检索原文，整篇 PDF 不会自动塞入每轮上下文。
+
+任务接口：`GET/POST /api/library-jobs?projectId=...&sessionId=...`，`GET /api/library-jobs/:id?...`，`POST /api/library-jobs/:id/control?...`。创建必须提供实际用户消息 `sourceId`；控制使用 `status/pause/resume/adjust`，调整需提供新消息来源。前端结果消息由持久化任务接口重建，模型追问进度时使用 `paper_library_job`。
+
+当前的图片和页面资产已保存，但模型只对解析文字和图注提取信息，不保证理解图像或复杂公式语义。非英文检索依赖关键词和已提取信息，后续可增加语义检索。论文资料暂提供查看和处理重试；论文删除与批注版本管理尚未实现。
+
+## 存储与接口
+
+- `data/sessions/<id>.jsonl`：原始消息、摘要、模式和生命周期记录。
+- `data/projects/<id>.json`：项目及兼容数据。
+- `data/projects/memory/project-<id>.json`：项目记忆。
+- `data/projects/memory/conversation-<id>.json`：对话记忆及增量检查点。
+- `data/sessions/requests/<id>.jsonl`：最近 40 次请求正文；不含认证头与接口密钥。
+- `data/papers/library.sqlite`：论文元数据、处理状态、摘要/方法档案及 FTS5 索引（含 WAL 配套文件）。
+- `data/papers/documents/<paperId>/`：`original.pdf`、`document.json`、`document.md`、`parsed.json`、`analysis.json`、页面与图片。
+
+目录可通过 `SESSIONS_DIR`、`PROJECTS_DIR` 配置。变更进行作用域校验和版本冲突检查，使用临时文件重命名写入；同项目执行中的请求禁止并发修改记忆与来源。
+
+论文目录通过 `PAPERS_DIR` 配置，解析器通过 `PAPER_PYTHON` 指定；默认使用 `.venv-papers/bin/python`。论文 SQLite 操作采用事务，查询和原文件下载均校验项目作用域；论文版本状态也会使旧请求预览失效。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET/POST /api/projects` | 项目列表与创建 |
+| `GET /api/sessions?projectId=...` | 当前项目对话；`deleted=true` 查看回收站 |
+| `GET/DELETE /api/sessions/:id?projectId=...` | 读取或软删除对话 |
+| `POST /api/sessions/:id/restore?projectId=...` | 恢复 |
+| `POST /api/chat` | `{sessionId?, projectId?, message, responseMode?}` |
+| `GET /api/memory-console?projectId=...&sessionId=...` | 记忆、历史、压缩与用量 |
+| `PATCH/DELETE /api/memory-console/:id?...&scope=project` | 编辑或删除，需 `expectedVersion`；范围也可为 `conversation` |
+| `GET /api/memory-console/:id/source?...&scope=...` | 来源 |
+| `PUT /api/context/controls` | 保存当前对话材料控制，需 `expectedRevision` |
+| `POST /api/context/inspect` | 不调用模型的输入草稿 |
+| `POST /api/context/usage` | 仅计算当前窗口、压缩阈值和用量，不调用模型 |
+| `POST /api/context/preview` | 准确首个请求预览与发送凭证 |
+| `GET /api/sessions/:id/context-requests?projectId=...` | 最近实际请求 |
+| `GET /api/papers?projectId=...` | 当前项目论文列表与研究档案 |
+| `POST /api/papers/upload?projectId=...&name=...` | 原始 PDF 二进制上传，返回后台任务 |
+| `POST /api/papers/import?projectId=...` | `{url}` 获取 arXiv PDF 并启动处理 |
+| `GET /api/papers/search-online?projectId=...&q=...&recent=true` | 学术检索；省略 recent 默认相关性 |
+| `POST /api/papers/:id/retry?projectId=...` | 重试失败任务 |
+| `GET /api/papers/:id/source?projectId=...&sourceId=...` | 提取结论对应原文 |
+| `GET /api/papers/:id/assets/original.pdf?projectId=...` | 当前项目的原始 PDF |
+
+## 验证
+
+```bash
+npm test
+```
+
+测试使用临时目录与 mock，不调用付费 API，不改动 `.env`。覆盖压缩、模式替换、来源校验、工具权限、共享与私有记忆隔离、自动更正、编辑删除保护、回收站和实际用量记录。
+
+真实研究回答评估会调用配置的接口：
+
+```bash
+npm run eval:research -- --live
+# 可选 --case=plateau-diagnosis --output=/absolute/path/report.md
+```
+
+题目与人工标准在 `eval/stage-1.json`。通过 mock 不代表真实模型研究判断正确。
+
+下一步：扩大真实论文提取保真评估，补充语义/图表检索、引用核验和论文管理，再接入实验配置、日志和诊断。
