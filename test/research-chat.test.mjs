@@ -17,12 +17,21 @@ const modes = responseModeSummaries();
 async function startApp(t, systemPrompt = 'sections', envOverrides = {}) {
   const sessionsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'research-chat-'));
   const requests = [];
+  const failedOnce=new Set();
   const upstream = http.createServer(async (req, res) => {
     req.setEncoding('utf8');
     let body = '';
     for await (const chunk of req) body += chunk;
     const payload = JSON.parse(body);
     requests.push(payload);
+    const failure=payload.messages.findLast(m=>m.role==='user')?.content.match(/FAIL_ONCE_EMPTY_TEST|TRUNCATED_ONCE_TEST/)?.[0];
+    if(failure&&!failedOnce.has(failure)){
+      failedOnce.add(failure);
+      if(failure==='FAIL_ONCE_EMPTY_TEST'){res.writeHead(503,{'Content-Type':'application/json'});return res.end(JSON.stringify({error:{message:'模拟上游网络不可用'}}));}
+      res.writeHead(200,{'Content-Type':'text/event-stream'});
+      res.write(`data: ${JSON.stringify({choices:[{delta:{content:'PARTIAL_NOT_FINAL'}}]})}\n\n`);
+      return res.end();
+    }
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     if(payload.tool_choice?.function?.name==='proposal_route'){
       const proposal=payload.messages.findLast(m=>m.role==='user')?.content?.includes('PROPOSAL_WORKFLOW_TEST');
@@ -281,6 +290,29 @@ test('concurrent turns in one session are rejected while the current turn is run
   await pending.text();
 });
 
+test('different projects can answer concurrently while session locks and status stay scoped', async t=>{
+  const {url}=await startApp(t);
+  const a=await newProject(url,'并发项目A'),b=await newProject(url,'并发项目B');
+  const initial=await chat(url,{projectId:a.id,message:'项目A起始问题'});
+  const sid=initial.events.find(e=>e.event==='meta').data.sessionId;
+  const held=await fetch(`${url}/api/chat`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId:a.id,sessionId:sid,message:'HOLD_TEST'})});
+  const during=(await jsonApi(url,`/api/sessions?projectId=${a.id}`)).data.sessions;
+  assert.equal(during.find(s=>s.id===sid).isResponding,true);
+  const independent=await chat(url,{projectId:b.id,message:'项目B可以独立回答'});
+  assert.equal(independent.events.at(-1).event,'done');
+  const bid=independent.events.find(e=>e.event==='meta').data.sessionId;
+  const wrongScope=await jsonApi(url,`/api/sessions/${sid}?projectId=${b.id}`);
+  assert.equal(wrongScope.status,404);
+  await held.text();
+  const finished=(await jsonApi(url,`/api/sessions?projectId=${a.id}`)).data.sessions;
+  assert.equal(finished.find(s=>s.id===sid).isResponding,false);
+  const savedA=(await jsonApi(url,`/api/sessions/${sid}?projectId=${a.id}`)).data;
+  const savedB=(await jsonApi(url,`/api/sessions/${bid}?projectId=${b.id}`)).data;
+  assert.equal(savedA.messages.at(-2).content,'HOLD_TEST');
+  assert.equal(savedB.messages.at(-2).content,'项目B可以独立回答');
+  assert.equal(savedA.messages.at(-1).status,'complete');assert.equal(savedB.messages.at(-1).status,'complete');
+});
+
 async function jsonApi(url, route, method = 'GET', body) {
   const response = await fetch(url + route, { method, headers: { 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   return { status: response.status, data: await response.json() };
@@ -422,6 +454,7 @@ test('assistant-only results and mixed invalid candidates fail atomically; activ
   const pending = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: sid, projectId: project.id, message: 'HOLD_TEST' }) });
   assert.equal((await jsonApi(url, `/api/sessions/${sid}${scope(project)}`, 'DELETE')).status, 409);
   assert.equal((await jsonApi(url, `/api/projects/${project.id}`, 'PATCH', { expectedVersion: project.version, card: {} })).status, 409);
+  assert.equal((await jsonApi(url, `/api/projects/${project.id}`, 'DELETE', { expectedVersion: project.version })).status, 409);
   await pending.text();
 });
 
@@ -996,6 +1029,8 @@ test('proposal workflow first-request preview is exact, local search precedes ad
   const execution=reply.events.at(-1).data.execution;
   assert.equal(execution.proposalWorkflow.route,'proposal');
   assert.equal(execution.proposalWorkflow.background.job.status,'queued');
+  assert.equal(execution.paperSupplement.needed,true);
+  assert.match(execution.paperSupplement.requirements[0].direction,/光学SAR/);
   assert.equal(execution.taskState,null);
   assert.equal(execution.toolCalls,1);
   assert.equal(reply.events.filter(e=>e.event==='delta').map(e=>e.data.text).join(''),'测试回复。');
@@ -1008,6 +1043,120 @@ test('proposal workflow first-request preview is exact, local search precedes ad
   assert.ok(traces.some(r=>r.stage==='proposal_route'));assert.ok(traces.some(r=>r.stage==='proposal_assessment'));
   const stored=(await jsonApi(url,`/api/sessions/${sid}?projectId=${project.id}`)).data;
   assert.equal(stored.messages.length,4);
+  assert.deepEqual(stored.messages.at(-1).paperSupplement,execution.paperSupplement);
   assert.doesNotMatch(JSON.stringify(stored.messages),/补充方向|job_id/);
 });
 
+
+test('a failed unanswered turn can be retried without adding a second user message, and stale retry requests are rejected',async(t)=>{
+  const {url,requests}=await startApp(t);
+  const initial=await chat(url,{message:'FAIL_ONCE_EMPTY_TEST 当前问题'});
+  assert.equal(initial.events.at(-1).event,'error');
+  const sid=initial.events.find(e=>e.event==='meta').data.sessionId;
+  const failed=(await jsonApi(url,`/api/sessions/${sid}`)).data;
+  assert.equal(failed.messages.length,1);assert.equal(failed.messages[0].replyStatus,'failed');assert.equal(failed.isResponding,false);
+  const source=failed.messages[0],count=requests.length;
+  const retry=await chat(url,{sessionId:sid,message:source.content,retry:{messageId:source.id,expectedRevision:failed.messageRevision}});
+  assert.equal(retry.events.at(-1).event,'done');
+  const final=(await jsonApi(url,`/api/sessions/${sid}`)).data;
+  assert.equal(final.messages.length,2);assert.equal(final.messages[0].id,source.id);assert.equal(final.messages[0].replyStatus,'complete');assert.equal(final.messageRevision,1);
+  assert.equal(requests[count].messages.filter(m=>m.role==='user'&&m.content===source.content).length,1);
+  const attempts=requests.length;
+  const stale=await chat(url,{sessionId:sid,message:source.content,retry:{messageId:source.id,expectedRevision:0}});
+  assert.equal(stale.response.status,409);assert.equal(requests.length,attempts);
+});
+test('an upstream stream ending without a completion marker saves only a marked fragment, and retry excludes it',async(t)=>{
+  const {url,requests}=await startApp(t);
+  const initial=await chat(url,{message:'TRUNCATED_ONCE_TEST 当前问题'});
+  assert.equal(initial.events.at(-1).event,'error');
+  const sid=initial.events.find(e=>e.event==='meta').data.sessionId;
+  const failed=(await jsonApi(url,`/api/sessions/${sid}`)).data;
+  assert.equal(failed.messages.length,2);assert.equal(failed.messages[1].status,'incomplete');assert.equal(failed.messages[1].content,'PARTIAL_NOT_FINAL');
+  const source=failed.messages[0],count=requests.length;
+  const retry=await chat(url,{sessionId:sid,message:source.content,retry:{messageId:source.id,expectedRevision:0}});
+  assert.equal(retry.events.at(-1).event,'done');assert.doesNotMatch(JSON.stringify(requests.slice(count)),/PARTIAL_NOT_FINAL/);
+  const final=(await jsonApi(url,`/api/sessions/${sid}`)).data;
+  assert.equal(final.messages.length,2);assert.equal(final.messages[1].status,'complete');
+});
+test('editing a completed turn excludes its old answer and project memory, keeps raw revisions and regenerates only the latest question',async(t)=>{
+  const {url,requests,sessionsDir}=await startApp(t,'sections',{AUTOMATIC_MEMORY:'true'});
+  const project=await newProject(url,'编辑后重发');
+  const first=await chat(url,{projectId:project.id,message:'AUTO_PROJECT OLD_FACT 数据是旧值'});
+  const sid=first.events.at(-1).data.sessionId;
+  const before=(await jsonApi(url,`/api/sessions/${sid}?projectId=${project.id}`)).data;
+  const count=requests.length;
+  const edited=await chat(url,{projectId:project.id,sessionId:sid,message:'AUTO_PROJECT CORRECTED_FACT 数据改正',retry:{messageId:before.messages[0].id,expectedRevision:0}});
+  assert.equal(edited.events.at(-1).event,'done');
+  const calls=requests.slice(count).filter(r=>!r.messages[0]?.content.includes('你是研究记忆整理器'));
+  assert.ok(calls.length);assert.doesNotMatch(JSON.stringify(calls),/OLD_FACT/);
+  const after=(await jsonApi(url,`/api/sessions/${sid}?projectId=${project.id}`)).data;
+  assert.equal(after.messages.length,2);assert.notEqual(after.messages[0].id,before.messages[0].id);
+  const memories=(await jsonApi(url,`/api/memory-console?projectId=${project.id}&sessionId=${sid}`)).data;
+  assert.match(JSON.stringify(memories.project.items),/CORRECTED_FACT/);assert.doesNotMatch(JSON.stringify(memories.project.items),/OLD_FACT/);
+  assert.match(await fs.readFile(path.join(sessionsDir,sid+'.jsonl'),'utf8'),/OLD_FACT/);
+  const next=await chat(url,{projectId:project.id,sessionId:sid,message:'下一轮'});
+  assert.equal(next.events.at(-1).event,'done');
+  const invalid=await chat(url,{projectId:project.id,sessionId:sid,message:'非法修改旧轮',retry:{messageId:after.messages[0].id,expectedRevision:after.messageRevision}});
+  assert.equal(invalid.response.status,409);
+});
+test('side-conversation retry stays private and a retry cannot replace an active turn',async(t)=>{
+  const {url}=await startApp(t,'sections',{AUTOMATIC_MEMORY:'true'});
+  const project=await newProject(url,'子对话重发隔离');
+  const root=await chat(url,{projectId:project.id,message:'AUTO_PROJECT PARENT_FIXED_BACKGROUND'}),sid=root.events.at(-1).data.sessionId;
+  const child=await openSide(url,project.id,sid);
+  const failed=await chat(url,{projectId:project.id,sessionId:child.id,message:'FAIL_ONCE_EMPTY_TEST 子对话问题'});
+  assert.equal(failed.events.at(-1).event,'error');
+  const state=(await jsonApi(url,`/api/sessions/${child.id}?projectId=${project.id}`)).data;
+  const retry=await chat(url,{projectId:project.id,sessionId:child.id,message:'子对话修改后的问题',retry:{messageId:state.messages[0].id,expectedRevision:0}});
+  assert.equal(retry.events.at(-1).event,'done');
+  const parent=(await jsonApi(url,`/api/sessions/${sid}?projectId=${project.id}`)).data;
+  assert.equal(parent.messages.length,2);assert.doesNotMatch(JSON.stringify(parent),/子对话修改后的问题/);
+  const memory=(await jsonApi(url,`/api/memory-console?projectId=${project.id}&sessionId=${sid}`)).data;
+  assert.doesNotMatch(JSON.stringify(memory.project.items),/子对话修改后的问题/);
+  const held=await fetch(url+'/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:sid,projectId:project.id,message:'HOLD_TEST'})});
+  const active=(await jsonApi(url,`/api/sessions/${sid}?projectId=${project.id}`)).data;
+  assert.equal(active.isResponding,true);
+  const clash=await chat(url,{sessionId:sid,projectId:project.id,message:'HOLD_TEST',retry:{messageId:active.messages.at(-1).id,expectedRevision:active.messageRevision}});
+  assert.equal(clash.response.status,409);await held.text();
+});
+
+
+
+test('project deletion hides every scoped resource and restoration preserves chats, memories, paper assets and conversation trash',async t=>{
+  const {url,requests}=await startApp(t,'sections',{PAPER_PYTHON:'/not-installed-project-deletion-parser'});
+  let p=await newProject(url,'可恢复项目');const other=await newProject(url,'可恢复项目');
+  const first=await chat(url,{projectId:p.id,message:'项目内研究记录'}),sid=first.events.find(e=>e.event==='meta').data.sessionId;
+  p=await addCandidates(url,p,[{kind:'hypothesis',text:'项目假设保留'}]);p=await confirm(url,p,p.memories[0]);
+  const side=(await jsonApi(url,`/api/sessions/${sid}/side-conversations?projectId=${p.id}`,'POST',{})).data.conversation;
+  const old=await chat(url,{projectId:p.id,message:'已经删除的对话'}),oldId=old.events.find(e=>e.event==='meta').data.sessionId;
+  await jsonApi(url,`/api/sessions/${oldId}?projectId=${p.id}`,'DELETE');
+  const pdf=Buffer.from('%PDF-1.4\nPROJECT_DELETE_PDF_FIXTURE\n%%EOF');
+  const uploaded=await fetch(url+`/api/papers/upload?projectId=${p.id}&name=keep.pdf`,{method:'POST',headers:{'Content-Type':'application/pdf'},body:pdf});
+  const paper=(await uploaded.json()).paper;assert.equal(uploaded.status,202);
+  assert.equal((await jsonApi(url,`/api/projects/${p.id}`,'DELETE',{expectedVersion:p.version-1})).status,409);
+  const deleted=await jsonApi(url,`/api/projects/${p.id}`,'DELETE',{expectedVersion:p.version});assert.equal(deleted.status,200);
+  assert.deepEqual((await jsonApi(url,'/api/projects')).data.projects.map(p=>p.id),[other.id]);
+  assert.equal((await jsonApi(url,'/api/projects?deleted=true')).data.projects[0].id,p.id);
+  for(const route of [`/api/projects/${p.id}`,`/api/projects/${p.id}?deleted=true`,`/api/sessions?projectId=${p.id}`,`/api/sessions/${sid}?projectId=${p.id}`,`/api/sessions/${sid}/context-requests?projectId=${p.id}`,`/api/sessions/${sid}/side-conversations?projectId=${p.id}`,`/api/sessions/${side.id}?projectId=${p.id}`,`/api/memory-console?projectId=${p.id}`,`/api/papers?projectId=${p.id}`,`/api/library-jobs?projectId=${p.id}&sessionId=${sid}`])assert.equal((await jsonApi(url,route)).status,404,route);
+  assert.equal((await fetch(url+`/api/papers/${paper.id}/assets/original.pdf?projectId=${p.id}&deleted=true`)).status,404);
+  const calls=requests.length;assert.equal((await chat(url,{projectId:p.id,sessionId:sid,message:'不能再发'})).response.status,404);assert.equal(requests.length,calls);
+  assert.equal((await jsonApi(url,'/api/context/usage','POST',{projectId:p.id,sessionId:sid,message:'检查'})).status,404);
+  assert.equal((await jsonApi(url,`/api/projects/${p.id}/restore`,'POST',{expectedVersion:p.version})).status,409);
+  const restored=await jsonApi(url,`/api/projects/${p.id}/restore`,'POST',{expectedVersion:deleted.data.version});assert.equal(restored.status,200);assert.equal(restored.data.memories[0].text,'项目假设保留');
+  assert.equal((await jsonApi(url,`/api/sessions/${sid}?projectId=${p.id}`)).data.messages[0].content,'项目内研究记录');
+  assert.equal((await jsonApi(url,`/api/sessions/${sid}/side-conversations?projectId=${p.id}`)).data.conversations[0].id,side.id);
+  assert.equal((await jsonApi(url,`/api/sessions?projectId=${p.id}&deleted=true`)).data.sessions[0].id,oldId);
+  assert.equal((await jsonApi(url,`/api/sessions?projectId=${p.id}`)).data.sessions.some(s=>s.id===oldId),false);
+  const asset=await fetch(url+`/api/papers/${paper.id}/assets/original.pdf?projectId=${p.id}`);assert.equal(asset.status,200);assert.deepEqual(Buffer.from(await asset.arrayBuffer()),pdf);
+  assert.equal((await jsonApi(url,`/api/projects/${other.id}`)).status,200);
+});
+
+test('an active side conversation prevents project deletion even when its parent is idle',async t=>{
+  const {url}=await startApp(t),p=await newProject(url,'子对话删除保护');
+  const first=await chat(url,{projectId:p.id,message:'主对话'}),sid=first.events.find(e=>e.event==='meta').data.sessionId;
+  const side=(await jsonApi(url,`/api/sessions/${sid}/side-conversations?projectId=${p.id}`,'POST',{})).data.conversation;
+  const held=await fetch(url+'/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId:p.id,sessionId:side.id,message:'HOLD_TEST'})});
+  assert.equal((await jsonApi(url,'/api/projects')).data.projects.find(project=>project.id===p.id).isResponding,true);
+  assert.equal((await jsonApi(url,`/api/projects/${p.id}`,'DELETE',{expectedVersion:p.version})).status,409);
+  await held.text();assert.equal((await jsonApi(url,`/api/projects/${p.id}`,'DELETE',{expectedVersion:p.version})).status,200);
+});

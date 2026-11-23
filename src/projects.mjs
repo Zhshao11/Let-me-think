@@ -43,18 +43,32 @@ export function createProject(input) {
   return save({ schemaVersion: 1, id: crypto.randomUUID(), name: name(input.name), card: card(input.card ?? {}),
     version: 1, createdAt: now, updatedAt: now, memories: [] });
 }
-export function readProject(id) {
+export function readProject(id, { includeDeleted = false } = {}) {
   const target = projectPath(id);
   if (!fs.existsSync(target)) fail('Project not found', 404);
   const project = JSON.parse(fs.readFileSync(target, 'utf8'));
   if (project.id !== id) fail('Project identity mismatch', 500);
+  if(project.deletedAt&&!includeDeleted)fail('项目已在回收站，请先恢复后使用。',404);
   return project;
 }
-export function listProjects() {
+export function listProjects({deleted=false}={}) {
   if (!fs.existsSync(config.projectsDir)) return [];
-  return fs.readdirSync(config.projectsDir).filter((file) => UUID.test(file.slice(0, -5)) && file.endsWith('.json'))
-    .map((file) => { const { id, name, updatedAt, version } = readProject(file.slice(0, -5)); return { id, name, updatedAt, version }; })
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return fs.readdirSync(config.projectsDir).filter(file=>UUID.test(file.slice(0,-5))&&file.endsWith('.json'))
+    .map(file=>readProject(file.slice(0,-5),{includeDeleted:true})).filter(project=>Boolean(project.deletedAt)===deleted)
+    .map(({id,name,updatedAt,version,deletedAt})=>({id,name,updatedAt,version,deletedAt:deletedAt??null}))
+    .sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
+}
+export function isProjectDeleted(id){
+  return fs.existsSync(projectPath(id))&&Boolean(readProject(id,{includeDeleted:true}).deletedAt);
+}
+export function deleteProject(id,{expectedVersion}={}){
+  return mutate(id,expectedVersion,project=>{project.deletedAt=new Date().toISOString();});
+}
+export function restoreProject(id,{expectedVersion}={}){
+  const project=readProject(id,{includeDeleted:true});
+  if(!project.deletedAt)fail('项目不在回收站。',409);
+  if(expectedVersion!==project.version)fail('项目已更新，请刷新后再恢复。',409);
+  project.deletedAt=null;project.version++;project.updatedAt=new Date().toISOString();return save(project);
 }
 function mutate(id, expectedVersion, change) {
   const project = readProject(id);

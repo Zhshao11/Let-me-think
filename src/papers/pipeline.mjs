@@ -5,6 +5,7 @@ import { config } from '../config.mjs';
 import { streamChat } from '../upstream.mjs';
 import { countText,tokenModelInfo } from '../agent/tokens.mjs';
 import { paperDirectory,getPaper,updatePaper,saveChunks,pendingPapers,registerPaper,paperChunks } from './store.mjs';
+import {readProject,isProjectDeleted} from '../projects.mjs';
 import {downloadArxivPdf} from './download.mjs';
 
 export const PAPER_FIELDS={summary:'论文摘要',problem:'研究问题',method:'核心方法',contributions:'作者声称的贡献',experiments:'实验证据',limitations:'局限与待验证问题'};
@@ -51,12 +52,15 @@ export function runDocling(paper,{signal}={}){
     child.once('close',code=>{clearTimeout(timer);if(code!==0)return reject(new Error(`PDF 解析失败：${stderr.slice(-1800)}`));try{resolve(JSON.parse(fs.readFileSync(path.join(directory,'parsed.json'),'utf8')));}catch(e){reject(e);}});
   });
 }
-const processing=new Map();
+const processing=new Map(),processingControllers=new Map();
 export function processPaper(projectId,id,options={}){
+  if(isProjectDeleted(projectId))throw Object.assign(new Error('项目已删除，论文处理已暂停。'),{status:404});
   const existing=getPaper(projectId,id);if(existing.status==='ready')return Promise.resolve(existing);
   const key=`${projectId}/${id}`;
   if(processing.has(key))return processing.get(key);
-  const task=processPaperOnce(projectId,id,options).finally(()=>processing.delete(key));
+  const controller=new AbortController();processingControllers.set(key,controller);
+  const signal=AbortSignal.any([controller.signal,options.signal].filter(Boolean));
+  const task=processPaperOnce(projectId,id,{...options,signal}).finally(()=>{processing.delete(key);processingControllers.delete(key);});
   processing.set(key,task);return task;
 }
 async function processPaperOnce(projectId,id,{parse=runDocling,complete=streamChat,signal}={}){
@@ -78,8 +82,13 @@ async function processPaperOnce(projectId,id,{parse=runDocling,complete=streamCh
   }catch(e){const paused=signal?.aborted;updatePaper(projectId,id,{status:paused?'paused':'failed',step:paused?'已暂停，继续任务后恢复':'处理未完成，可重试',error:paused?null:e.message.slice(0,2200)});throw e;}
 }
 let running=false;const queued=new Set();
-export function enqueuePaper(projectId,id){getPaper(projectId,id);queued.add(`${projectId}/${id}`);queueMicrotask(drain);}
+export function enqueuePaper(projectId,id){getPaper(projectId,id);if(isProjectDeleted(projectId)){updatePaper(projectId,id,{status:'paused',step:'项目已删除，论文处理暂停'});return;}queued.add(`${projectId}/${id}`);queueMicrotask(drain);}
 async function drain(){if(running)return;running=true;try{while(queued.size){const key=queued.values().next().value;queued.delete(key);const [projectId,id]=key.split('/');try{await processPaper(projectId,id);}catch{/* status persists; subsequent jobs continue */}}}finally{running=false;}}
+export function pausePaperJobsForProject(projectId){
+  for(const key of queued)if(key.startsWith(projectId+'/'))queued.delete(key);
+  for(const [key,controller] of processingControllers)if(key.startsWith(projectId+'/'))controller.abort();
+  for(const paper of pendingPapers().filter(p=>p.projectId===projectId))updatePaper(projectId,paper.id,{status:'paused',step:'项目已删除，论文处理暂停',error:null});
+}
 export function resumePaperJobs({excludeIds=[]}={}){for(const p of pendingPapers())if(!excludeIds.includes(p.id))enqueuePaper(p.projectId,p.id);}
 export function retryPaper(projectId,id){const p=getPaper(projectId,id);if(!['failed','paused'].includes(p.status))throw Object.assign(new Error('只有未完成的论文需要重试'),{status:409});updatePaper(projectId,id,{status:'queued',step:'等待重试',error:null});enqueuePaper(projectId,id);return getPaper(projectId,id);}
 
@@ -92,9 +101,10 @@ export function arxivIdentifier(input){
   if(!id)throw new Error('arXiv 论文地址无效');return id;
 }
 export async function importArxiv(projectId,input,{fetcher=fetch,enqueue=true,signal}={}){
-  signal?.throwIfAborted();
+  readProject(projectId);signal?.throwIfAborted();
   const id=arxivIdentifier(input),bytes=await downloadArxivPdf(id,{fetcher,signal});
   signal?.throwIfAborted();
+  readProject(projectId);
   const result=registerPaper({projectId,bytes,name:`arxiv-${id}.pdf`,sourceUrl:`https://arxiv.org/abs/${id}`});
   if(enqueue&&!result.duplicate)enqueuePaper(projectId,result.paper.id);return result;
 }

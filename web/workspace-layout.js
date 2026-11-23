@@ -4,6 +4,8 @@
   const storageKey='research.workspace-layout.v1';
   let saved={};try{const value=JSON.parse(localStorage.getItem(storageKey)??'{}');if(value&&typeof value==='object'&&!Array.isArray(value))saved=value;}catch{}
   const persist=()=>{try{localStorage.setItem(storageKey,JSON.stringify(saved));}catch{}};
+  // Apply the compact composer once; later manual resizing is still remembered.
+  if(saved.composerLayout!==2){saved.mainInputHeight=64;saved.composerLayout=2;persist();}
   const numeric=(value,fallback)=>typeof value==='number'&&Number.isFinite(value)?value:fallback;
   const clamp=(value,min,max)=>Math.max(Math.min(min,max),Math.min(max,value));
   const px=value=>Math.round(value)+'px';
@@ -40,7 +42,7 @@
   }
   function sizeInputs(){
     for(const [id,key,fallback,maximum] of [
-      ['input','mainInputHeight',88,Math.min(innerHeight*.5,innerHeight-280)],
+      ['input','mainInputHeight',64,Math.min(innerHeight*.5,innerHeight-280)],
       ['side-chat-input','sideInputHeight',80,(panel.open?panel.getBoundingClientRect().height:innerHeight)-360],
     ]){
       const input=document.getElementById(id),max=Math.max(64,maximum);
@@ -104,7 +106,7 @@
     handle.addEventListener('dblclick',()=>{reset();finish();});
   }
   resizer(sidebar,{label:'拖动调整侧栏宽度',className:'resize-right',read:()=>sidebar.getBoundingClientRect().width,write:(width,dx)=>sidebarWidth(width+dx),reset:()=>sidebarWidth(240)});
-  for(const [id,container,key,fallback] of [['input','composer','mainInputHeight',88],['side-chat-input','side-chat-composer','sideInputHeight',80]]){
+  for(const [id,container,key,fallback] of [['input','composer','mainInputHeight',64],['side-chat-input','side-chat-composer','sideInputHeight',80]]){
     const input=document.getElementById(id);
     resizer(document.getElementById(container),{label:id==='input'?'拖动调整主对话输入框高度':'拖动调整子对话输入框高度',axes:'y',className:'resize-top',read:()=>input.getBoundingClientRect().height,write:(height,_dx,dy)=>{saved[key]=height-dy;sizeInputs();saved[key]=input.getBoundingClientRect().height;},reset:()=>{saved[key]=fallback;sizeInputs();}});
   }

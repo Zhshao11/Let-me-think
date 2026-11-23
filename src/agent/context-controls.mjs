@@ -43,7 +43,7 @@ export function validateContextControls(input, session, project) {
 export function controlledHistory(session, controls) {
   if (!controls.includeHistory) return [];
   const excluded = new Set(controls.excludedMessageIds);
-  return session.messages.filter((message) => !excluded.has(message.id)).map((message) => {
+  return session.messages.filter((message) => !excluded.has(message.id) && message.status !== 'incomplete').map((message) => {
     if (!Object.hasOwn(controls.messageEdits, message.id)) return { ...message };
     return { ...message, content: `【用户在上下文编辑器修订的投递版本；原始消息保留，来源身份仍为${message.role}】\n${controls.messageEdits[message.id]}`, contextEdited: true };
   });

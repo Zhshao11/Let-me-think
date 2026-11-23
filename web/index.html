@@ -5,7 +5,7 @@
 <div class="layout">
   <aside class="sidebar" id="sidebar" aria-label="项目与对话侧栏">
     <div class="brand"><span>Let me think</span><button id="collapse-sidebar" class="ghost" type="button" aria-label="收起侧栏" title="收起侧栏">‹</button></div>
-    <label class="small-label" for="project-select">当前项目</label>
+    <div class="project-switch-heading"><label class="small-label" for="project-select">当前项目</label><button id="manage-projects" class="ghost" type="button">项目管理</button></div>
     <select id="project-select"><option value="">独立对话</option></select>
     <div class="sidebar-actions"><button id="new-chat" class="new-chat">+ 新对话</button><button id="new-project" class="ghost">新项目</button></div>
     <button id="toggle-trash" class="ghost trash-toggle">回收站</button>
@@ -13,7 +13,7 @@
     <div class="config-badge" id="config-badge"></div>
   </aside>
   <main class="main">
-    <header class="topbar"><div class="topbar-heading"><button id="toggle-sidebar" class="ghost" type="button" aria-label="展开侧栏" aria-controls="sidebar" title="展开侧栏">☰</button><span id="model-label" class="model-label"></span></div><div class="topbar-actions"><button id="open-console" class="ghost">上下文记忆控制台</button><button id="open-settings" class="ghost">设置</button></div></header>
+    <header class="topbar"><div class="topbar-heading"><button id="toggle-sidebar" class="ghost" type="button" aria-label="展开侧栏" aria-controls="sidebar" title="展开侧栏">☰</button><span id="model-label" class="model-label"></span></div><nav class="topbar-actions" aria-label="功能区"><button id="attach-paper" class="ghost" type="button">添加论文</button><input id="paper-file" type="file" accept="application/pdf,.pdf" hidden multiple /><button id="open-console" class="ghost">上下文记忆控制台</button><button id="open-settings" class="ghost">设置</button></nav></header>
     <nav class="workspace-tools" aria-label="右侧辅助窗口">
       <button id="open-side-chat" class="library-launcher" type="button" disabled aria-label="子对话" aria-controls="side-chat" aria-expanded="false" title="打开或收起子对话"><span>子对话</span></button>
       <button id="open-library" class="library-launcher" type="button" disabled aria-label="论文补库" aria-controls="side-chat" aria-expanded="false" title="打开或收起论文补库"><span>论文补库</span><small id="library-launcher-status"></small></button>
@@ -22,9 +22,16 @@
     <button id="context-usage" class="context-usage" type="button" aria-label="查看上下文窗口用量"><span id="context-usage-label">正在计算上下文…</span><span id="context-usage-bar" class="window-track" aria-hidden="true"></span></button>
     <div id="transcript" class="transcript"></div>
     <div id="progress" class="progress hidden" role="status"></div>
-    <form id="composer" class="composer"><div class="composer-main"><div id="paper-status" class="paper-status" role="status"></div><textarea id="input" aria-label="消息" rows="3" placeholder="说说你在研究什么，或者现在遇到了什么问题…"></textarea><div class="composer-footer"><div class="composer-options"><select id="response-mode" aria-label="回答方式"><option value="concise">简洁</option></select><button id="attach-paper" class="ghost paper-button" type="button">添加论文</button><input id="paper-file" type="file" accept="application/pdf,.pdf" hidden multiple /></div><span>Enter 发送 · Shift+Enter 换行</span></div></div><button id="send" type="submit" disabled>发送</button></form>
+    <form id="composer" class="composer"><div class="composer-main"><textarea id="input" aria-label="消息" rows="2" placeholder="说说你在研究什么，或者现在遇到了什么问题…"></textarea><div class="composer-footer"><div class="composer-options"><select id="response-mode" aria-label="回答方式"><option value="concise">简洁</option></select><div id="paper-status" class="paper-status" role="status"></div></div><span>Enter 发送 · Shift+Enter 换行</span></div></div><button id="send" type="submit" disabled>发送</button></form>
   </main>
 </div>
+<dialog id="project-manager" class="project-dialog compact-dialog" aria-labelledby="project-manager-title">
+  <div class="settings-head"><h2 id="project-manager-title">项目管理</h2><button class="ghost" data-close="project-manager" type="button">关闭</button></div>
+  <nav class="console-tabs" aria-label="项目管理范围"><button id="project-manager-active" type="button" class="active">项目</button><button id="project-manager-trash" type="button">项目回收站</button></nav>
+  <p class="console-description">删除后，对话、记忆和论文随项目保留在回收站，可以恢复。后台论文任务会暂停，恢复项目后可按需继续。</p>
+  <p id="project-manager-notice" class="settings-msg" role="status"></p>
+  <div id="project-manager-list"></div>
+</dialog>
 <dialog id="new-project-dialog" class="project-dialog compact-dialog"><div class="settings-head"><h2>新建项目</h2><button class="ghost" data-close="new-project-dialog">关闭</button></div><form id="new-project-form" class="project-form"><label>项目名称<input id="project-name" required maxlength="80" /></label><p class="settings-note">背景、研究问题和实验进展直接在对话中告诉我即可。</p><div class="settings-actions"><button type="submit">创建</button></div><p id="project-error" class="settings-msg" role="status"></p></form></dialog>
 <dialog id="settings-dialog" class="project-dialog compact-dialog"><div class="settings-head"><h2>设置</h2><button class="ghost" data-close="settings-dialog">关闭</button></div><form id="settings-form" class="project-form">
 <label>API Key<input id="cfg-key" type="password" autocomplete="off" placeholder="留空保持当前密钥" /></label><label>接口地址<input id="cfg-base" autocomplete="off" placeholder="留空保持当前地址" /></label><label>模型（固定）<input id="cfg-model" readonly value="gpt-6.1-sol" title="对话、记忆、压缩和论文提取统一使用此模型" /></label>
@@ -50,5 +57,5 @@
   <p id="side-chat-progress" class="console-description" role="status"></p>
   <form id="side-chat-composer" class="side-chat-composer"><label class="side-chat-input-label" for="side-chat-input">子对话消息</label><textarea id="side-chat-input" rows="3" placeholder="在这里查文献、解释概念，或展开一个旁支问题…"></textarea><div class="side-chat-footer"><select id="side-chat-mode" aria-label="子对话回答方式"><option value="concise">简洁</option><option value="review">严格评审</option><option value="experiment">实验分析</option><option value="detailed">详细</option></select><span>独立保存 · 不自动回传</span><button id="side-chat-send" type="submit">发送</button></div></form>
 </dialog>
-<script src="/vendor/markdown-it.min.js"></script><script src="/markdown.js"></script><script src="/app.js"></script><script src="/context-usage.js"></script><script src="/papers.js"></script><script src="/memory-console.js"></script><script src="/side-chat.js"></script><script src="/workspace-layout.js"></script>
+<script src="/vendor/markdown-it.min.js"></script><script src="/markdown.js"></script><script src="/turn-actions.js"></script><script src="/app.js"></script><script src="/context-usage.js"></script><script src="/papers.js"></script><script src="/memory-console.js"></script><script src="/side-chat.js"></script><script src="/project-manager.js"></script><script src="/workspace-layout.js"></script>
 </body></html>

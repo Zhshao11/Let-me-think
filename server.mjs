@@ -11,20 +11,21 @@ import {
   appendTurnContext, readSession, listSessions,
   appendSummary, appendRuntimeEvent,
   scopedSession, deleteSession, restoreSession,
-  saveContextControls, appendContextRequest, readContextRequests,
+  saveContextControls, appendContextRequest, readContextRequests, reviseLastTurn, appendTurnStatus,
 } from './src/session.mjs';
 import { normalizeProjectId, createProject, readProject, listProjects, updateProject,
-  publicProject, addMemoryCandidates, reviewMemory, memoryEvidence } from './src/projects.mjs';
+  publicProject, addMemoryCandidates, reviewMemory, memoryEvidence,deleteProject,restoreProject } from './src/projects.mjs';
 import { extractMemoryCandidates } from './src/agent/project-memory.mjs';
 import { contextSpec, assembleManagedContext, ContextPreviews } from './src/agent/context-manager.mjs';
 import { emptySession, validateContextControls, controlledHistory, DEFAULT_CONTEXT_CONTROLS } from './src/agent/context-controls.mjs';
 import { runAgent } from './src/agent/runtime.mjs';
+import { paperSupplementStatus } from './src/agent/paper-supplement-status.mjs';
 import { memoryView, migrateProjectMemory, editMemory, memorySource } from './src/memory-store.mjs';
 import { syncMemories } from './src/agent/memory.mjs';
 import { registerPaper,listPapers,getPaper,paperDirectory,paperChunks } from './src/papers/store.mjs';
-import { enqueuePaper,resumePaperJobs,retryPaper,importArxiv,PAPER_FIELDS } from './src/papers/pipeline.mjs';
+import { enqueuePaper,resumePaperJobs,pausePaperJobsForProject,retryPaper,importArxiv,PAPER_FIELDS } from './src/papers/pipeline.mjs';
 import { searchArxiv } from './src/papers/discovery.mjs';
-import { configureLibraryJobs,resumeLibraryJobs,startLibraryExpansion,controlLibraryExpansion,pauseLibraryJobsForSession } from './src/papers/library-jobs.mjs';
+import { configureLibraryJobs,resumeLibraryJobs,startLibraryExpansion,controlLibraryExpansion,pauseLibraryJobsForSession,pauseLibraryJobsForProject } from './src/papers/library-jobs.mjs';
 import { listLibraryJobs,getLibraryJob,publicLibraryJob } from './src/papers/library-jobs-store.mjs';
 import {createSideConversation,listSideConversations} from './src/side-conversations.mjs';
 
@@ -98,6 +99,7 @@ function serveStatic(req, res, url) {
 async function handleChat(req, res) {
   let lockedSession = null;
   let lockedProject = null;
+  let activeTurn = null, assistantText = '', replySaved = false;
   try {
     assertConfigured();
     const body = await readBody(req);
@@ -119,6 +121,7 @@ async function handleChat(req, res) {
     const turnConfig = { ...config };
     const rawMode = turnConfig.systemPrompt === 'off';
     let sessionId = typeof body.sessionId === 'string' && body.sessionId ? body.sessionId : null;
+    if(body.retry!==undefined&&(!sessionId||!body.retry||typeof body.retry!=='object'||Array.isArray(body.retry)||Object.keys(body.retry).some(k=>!['messageId','expectedRevision'].includes(k))||body.previewId))return sendJson(res,400,{error:'重发需要当前会话、最后一条问题ID和对话版本，不支持复用旧发送预览。'});
     if (sessionId && activeSessions.has(sessionId)) return sendJson(res, 409, { error: 'This session already has an active turn' });
     if (sessionId) {
       try { ensureSession(sessionId, model, projectId); }
@@ -146,8 +149,14 @@ async function handleChat(req, res) {
     activeSessions.add(sessionId);
     lockedSession = sessionId;
     if (projectId&&!originalSession.sideContext) { activeProjects.add(projectId); lockedProject = projectId; }
-    const session = readSession(sessionId);
+    let session = readSession(sessionId), retrySource = null;
     const turnId = crypto.randomUUID();
+    if(body.retry){
+      const revised=reviseLastTurn(sessionId,projectId,{...body.retry,message:currentMessage.trim()});
+      session=revised.session;retrySource=revised.source;
+      activeTurn={turnId,userMessageId:retrySource.id};
+      appendTurnStatus(sessionId,{...activeTurn,status:'running'});
+    }
     const abort = new AbortController();
     res.on('close', () => abort.abort());
     const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(180_000)]);
@@ -170,7 +179,7 @@ async function handleChat(req, res) {
       onRequest: (payload) => onRequest({ stage: 'memory_update', payload }) });
     for (const request of preparationRequests) onRequest({ ...request, origin: 'preview_preparation' });
     if (!managed) managed = await assembleManagedContext({
-      session, project, request: { message: currentMessage.trim(), responseMode }, config: turnConfig, signal, onProgress,
+      session, project, request: { message: currentMessage.trim(), responseMode, omitMessageId:retrySource?.id }, config: turnConfig, signal, onProgress,
       onSummary: (summary) => appendSummary(sessionId, summary), onRequest: (payload) => onRequest({ stage: 'summary', payload }),
       onCompression: turnConfig.automaticMemory&&!session.sideContext ? async ({ history, summary }) => {
         try { await synchronize(history, summary); } catch (error) { write('memory_status', { warning: error.message }); }
@@ -187,16 +196,19 @@ async function handleChat(req, res) {
     };
     if (!rawMode) appendPromptSections(sessionId, sections);
     appendTurnContext(sessionId, turnContext);
-    const userSource=appendMessage(sessionId, 'user', currentMessage.trim());
-    write('meta', { sessionId, model, ...turnContext, sections: sectionSummaries(sections) });
+    const userSource=retrySource??appendMessage(sessionId, 'user', currentMessage.trim(),{turnId});
+    if(!activeTurn){activeTurn={turnId,userMessageId:userSource.id};appendTurnStatus(sessionId,{...activeTurn,status:'running'});}
+    write('meta', { sessionId, model, ...turnContext, userMessageId:userSource.id,messageRevision:session.messageRevision,sections: sectionSummaries(sections) });
     onProgress('正在组织回答…');
-    let assistantText = '';
     const execution = await runAgent({
       messages: context.messages, profile, history: managed.history, projectId,sessionId,sourceId:userSource.id,contextAccess: managed.access, model, signal, onProgress, onRequest,
       onDelta: (text) => { assistantText += text; write('delta', { text }); },
       onEvent: (event) => appendRuntimeEvent(sessionId, event),
     });
-    if (assistantText.trim()) appendMessage(sessionId, 'assistant', assistantText);
+    execution.paperSupplement=paperSupplementStatus(execution);
+    if (assistantText.trim()) appendMessage(sessionId, 'assistant', assistantText,{turnId,status:'complete',paperSupplement:execution.paperSupplement});
+    replySaved=true;
+    appendTurnStatus(sessionId,{...activeTurn,status:'complete'});
     appendRuntimeEvent(sessionId, { event: 'usage', usage: execution.usage, callsUsage: execution.callsUsage });
     let memory = null;
     if (turnConfig.automaticMemory&&!session.sideContext) {
@@ -211,6 +223,11 @@ async function handleChat(req, res) {
     write('done', { sessionId, chars: assistantText.length, execution, memory });
     res.end();
   } catch (err) {
+    if(lockedSession&&activeTurn&&!replySaved){
+      const error=err.name==='AbortError'?'连接已中断，回复未完成。':String(err.message).slice(0,500);
+      if(assistantText.trim())appendMessage(lockedSession,'assistant',assistantText,{turnId:activeTurn.turnId,status:'incomplete',error});
+      appendTurnStatus(lockedSession,{...activeTurn,status:'failed',error});
+    }
     if (!res.headersSent) return sendJson(res, err.status ?? 500, { error: err.message });
     res.write(`event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
     res.end();
@@ -223,7 +240,8 @@ async function handleChat(req, res) {
 const server = http.createServer(async (req, res) => {
   try {
   const url = new URL(req.url, `http://${config.host}:${config.port}`);
-  if (req.method === 'GET' && (url.pathname.startsWith('/vendor/katex/')||['/', '/index.html', '/favicon.ico', '/favicon-32.png', '/favicon.png', '/app.js', '/side-chat.js', '/workspace-layout.js', '/markdown.js', '/vendor/markdown-it.min.js', '/context-usage.js', '/memory-console.js', '/papers.js', '/style.css'].includes(url.pathname))) {
+  if(url.pathname.startsWith('/api/')&&url.searchParams.get('projectId'))readProject(normalizeProjectId(url.searchParams.get('projectId')));
+  if (req.method === 'GET' && (url.pathname.startsWith('/vendor/katex/')||['/', '/index.html', '/favicon.ico', '/favicon-32.png', '/favicon.png', '/app.js', '/side-chat.js', '/workspace-layout.js', '/project-manager.js', '/turn-actions.js', '/markdown.js', '/vendor/markdown-it.min.js', '/context-usage.js', '/memory-console.js', '/papers.js', '/style.css'].includes(url.pathname))) {
     return serveStatic(req, res, url);
   }
   if (req.method === 'GET' && url.pathname === '/api/config') {
@@ -251,7 +269,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/sessions') {
     const projectId = normalizeProjectId(url.searchParams.get('projectId'));
     if (projectId) readProject(projectId);
-    return sendJson(res, 200, { sessions: listSessions({ projectId, deleted: url.searchParams.get('deleted') === 'true' }) });
+    return sendJson(res, 200, { sessions: listSessions({ projectId, deleted: url.searchParams.get('deleted') === 'true' }).map(session=>({...session,isResponding:activeSessions.has(session.id)})) });
   }
   const sidesRoute=url.pathname.match(/^\/api\/sessions\/([0-9a-f-]+)\/side-conversations$/);
   if(sidesRoute){
@@ -287,7 +305,7 @@ const server = http.createServer(async (req, res) => {
     readProject(projectId);
     if(url.pathname==='/api/papers'&&req.method==='GET')return sendJson(res,200,{papers:listPapers(projectId),fields:PAPER_FIELDS});
     if(url.pathname==='/api/papers/upload'&&req.method==='POST'){
-      const bytes=await readPdf(req),result=registerPaper({projectId,bytes,name:url.searchParams.get('name')});
+      const bytes=await readPdf(req);readProject(projectId);const result=registerPaper({projectId,bytes,name:url.searchParams.get('name')});
       if(!result.duplicate)enqueuePaper(projectId,result.paper.id);
       return sendJson(res,202,result);
     }
@@ -399,7 +417,7 @@ const server = http.createServer(async (req, res) => {
     const [, id, restore] = sessionRoute;
     const projectId = normalizeProjectId(url.searchParams.get('projectId'));
     if (projectId) readProject(projectId);
-    if (req.method === 'GET' && !restore) return sendJson(res, 200, scopedSession(id, projectId, { deleted: url.searchParams.get('deleted') === 'true' }));
+    if (req.method === 'GET' && !restore) return sendJson(res, 200, {...scopedSession(id, projectId, { deleted: url.searchParams.get('deleted') === 'true' }),isResponding:activeSessions.has(id)});
     if (req.method === 'DELETE' && !restore || req.method === 'POST' && restore) {
       assertProjectIdle(projectId);
       if (activeSessions.has(id)) return sendJson(res, 409, { error: '会话正在执行，请完成后再删除。' });
@@ -409,8 +427,14 @@ const server = http.createServer(async (req, res) => {
     }
   }
   if (url.pathname === '/api/projects') {
-    if (req.method === 'GET') return sendJson(res, 200, { projects: listProjects() });
+    if (req.method === 'GET') return sendJson(res, 200, { projects: listProjects({deleted:url.searchParams.get('deleted')==='true'}).map(project=>({...project,isResponding:activeProjects.has(project.id)||[...activeSessions].some(id=>readSession(id)?.projectId===project.id)})) });
     if (req.method === 'POST') return sendJson(res, 201, publicProject(createProject(await readBody(req))));
+  }
+  const restoreProjectRoute=url.pathname.match(/^\/api\/projects\/([0-9a-f-]+)\/restore$/);
+  if(restoreProjectRoute){
+    if(req.method!=='POST')return sendJson(res,405,{error:'Method not allowed'});
+    const body=await readBody(req);assertProjectIdle(restoreProjectRoute[1]);
+    return sendJson(res,200,publicProject(restoreProject(restoreProjectRoute[1],body)));
   }
   const projectRoute = url.pathname.match(/^\/api\/projects\/([0-9a-f-]+)(?:\/(memories|extract)(?:\/([0-9a-f-]+)(\/evidence)?)?)?$/);
   if (projectRoute) {
@@ -423,6 +447,14 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { sources: memoryEvidence(id, memory) });
     }
     assertProjectIdle(id);
+    if(req.method==='DELETE'&&!resource){
+      const body=await readBody(req);assertProjectIdle(id);
+      if([...activeSessions].some(sessionId=>readSession(sessionId)?.projectId===id))return sendJson(res,409,{error:'项目内还有对话正在回复，请完成后再删除。'});
+      if(body.expectedVersion!==readProject(id).version)return sendJson(res,409,{error:'项目已更新，请刷新后再删除。'});
+      pauseLibraryJobsForProject(id);pausePaperJobsForProject(id);
+      const deleted=deleteProject(id,body);
+      return sendJson(res,200,{ok:true,id:deleted.id,deletedAt:deleted.deletedAt,version:deleted.version});
+    }
     if (req.method === 'PATCH' && !resource) {
       const body = await readBody(req); assertProjectIdle(id);
       return sendJson(res, 200, publicProject(updateProject(id, body)));

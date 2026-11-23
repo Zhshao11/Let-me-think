@@ -41,7 +41,7 @@ export function contextSpec({ session, project, request, config }) {
   }
   const systemPrompt = profile.rawMode ? null : renderSystemPrompt(sections);
   const access = contextAccess(session, controls);
-  const history = [...(session.sideContext&&controls.includeHistory?session.sideContext.messages:[]),...controlledHistory(session, controls)];
+  const history = [...(session.sideContext&&controls.includeHistory?session.sideContext.messages:[]),...controlledHistory(session, controls)].filter(m=>m.id!==request.omitMessageId);
   access.allMessageIds=history.map(m=>m.id);
   profile.toolTokens = countRequestTokens([], toolDefinitions(profile, project?.id ?? null), tokenModel.encoding) - countRequestTokens([], [], tokenModel.encoding);
   const memory = config.automaticMemory&&!session.sideContext ? memoryView(project?.id ?? null, session.id) : null;

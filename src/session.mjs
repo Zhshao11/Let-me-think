@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { config } from './config.mjs';
 import { DEFAULT_RESPONSE_MODE } from './agent/policies.mjs';
+import { paperSupplementStatus } from './agent/paper-supplement-status.mjs';
 
 const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -91,8 +92,35 @@ export function readContextRequests(id) {
   return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-40).map((line) => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
 }
 
-export function appendMessage(id, role, content) {
-  return writeLine(id, { type: 'message', role, content });
+export function appendMessage(id, role, content, metadata = {}) {
+  return writeLine(id, { ...metadata, type: 'message', role, content });
+}
+
+export function appendTurnStatus(id, status) {
+  return writeLine(id, { type: 'turn_status', ...status });
+}
+
+export function reviseLastTurn(id, projectId, { messageId, message, expectedRevision }) {
+  const session = scopedSession(id, projectId);
+  if (!Number.isInteger(expectedRevision) || expectedRevision !== session.messageRevision) throw Object.assign(new Error('对话已更新，请重新加载后再重发。'), { status: 409 });
+  const at = session.messages.findLastIndex(m => m.role === 'user');
+  const previous = session.messages[at];
+  if (!previous || previous.id !== messageId) throw Object.assign(new Error('只能编辑或重发当前对话的最后一轮问题。'), { status: 409 });
+  if (typeof message !== 'string' || !message.trim()) throw Object.assign(new Error('问题不能为空。'), { status: 400 });
+  const content = message.trim(), changed = content !== previous.content;
+  // Same-text retries retain source identity, so already dispatched paper jobs
+  // remain idempotent. Edits get a new identity to invalidate old derived memory.
+  const replacement = changed ? { id: crypto.randomUUID(), role: 'user', content, timestamp: new Date().toISOString() } : { ...previous };
+  delete replacement.replyStatus; delete replacement.replyError; delete replacement.turnId;
+  const removed = new Set(session.messages.slice(at).map(m => m.id));
+  const controls = session.contextControls ? structuredClone(session.contextControls) : null;
+  if (controls) {
+    controls.excludedMessageIds = controls.excludedMessageIds.filter(key => !removed.has(key));
+    for (const key of removed) delete controls.messageEdits[key];
+  }
+  writeLine(id, { type: 'turn_revised', targetMessageId: messageId, supersededMessageIds: [...removed], replacement,
+    messageRevision: session.messageRevision + 1, controls, changed });
+  return { session: readSession(id), source: replacement, changed };
 }
 
 export function appendModelChange(id, model) {
@@ -126,6 +154,8 @@ export function readSession(id) {
   let contextControls = null;
   let lastUsage = null;
   let sideContext = null;
+  let messageRevision = 0;
+  let pendingPaperSupplement = null;
   for (const event of events) {
     if (event.type === 'session') {
       model = event.model ?? null;
@@ -140,6 +170,7 @@ export function readSession(id) {
     } else if (event.type === 'model_change') {
       model = event.model;
     } else if (event.type === 'turn_context') {
+      pendingPaperSupplement = null;
       lastTurnContext = event;
       turnContext = { responseMode: event.responseMode, protocolVersion: event.protocolVersion };
       responseMode = event.requestedResponseMode ?? event.responseMode ?? DEFAULT_RESPONSE_MODE;
@@ -150,13 +181,32 @@ export function readSession(id) {
       contextControls = event.controls;
     } else if (event.type === 'runtime_event' && event.event === 'usage') {
       lastUsage = event.usage;
+    } else if (event.type === 'runtime_event' && event.event === 'proposal_workflow' && event.stage === 'ready') {
+      // Recover decisions from older replies that already logged the workflow.
+      pendingPaperSupplement = paperSupplementStatus({proposalWorkflow:event});
+    } else if (event.type === 'turn_revised') {
+      const at = messages.findIndex(m => m.id === event.targetMessageId);
+      if (at >= 0) {
+        messages.splice(at);
+        parentId = messages.at(-1)?.id ?? null;
+        messages.push({ ...turnContext, ...event.replacement, parentId });
+        parentId = event.replacement.id;
+        summary = null; lastUsage = null; contextControls = event.controls;
+        messageRevision = event.messageRevision;
+        pendingPaperSupplement = null;
+      }
+    } else if (event.type === 'turn_status') {
+      const source = messages.find(m => m.id === event.userMessageId && m.role === 'user');
+      if (source) { source.replyStatus = event.status; source.replyError = event.error ?? null; source.turnId = event.turnId; }
     } else if (event.type === 'message') {
-      const message = { role: event.role, content: event.content, id: event.id, parentId, timestamp: event.timestamp, ...turnContext };
+      const message = { role: event.role, content: event.content, id: event.id, parentId, timestamp: event.timestamp, ...turnContext,
+        ...(event.status ? { status: event.status } : {}), ...(event.error ? { error: event.error } : {}), ...(event.turnId ? { turnId: event.turnId } : {}),
+        ...(event.role==='assistant'?{paperSupplement:event.paperSupplement??(event.status==='incomplete'?null:pendingPaperSupplement)}:{}) };
       messages.push(message);
       parentId = event.id;
     }
   }
-  return { id, model, createdAt, projectId, deletedAt, responseMode, messages, summary, lastTurnContext, contextRevision, contextControls, lastUsage, sideContext };
+  return { id, model, createdAt, projectId, deletedAt, responseMode, messages, summary, lastTurnContext, contextRevision, contextControls, lastUsage, sideContext, messageRevision };
 }
 
 export function listSessions({ projectId = null, deleted = false, parentSessionId=null } = {}) {

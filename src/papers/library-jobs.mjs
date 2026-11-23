@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.mjs';
-import { readProject } from '../projects.mjs';
+import { readProject,isProjectDeleted } from '../projects.mjs';
 import { scopedSession,appendContextRequest } from '../session.mjs';
 import { memoryView } from '../memory-store.mjs';
 import { DEFAULT_CONTEXT_CONTROLS,validateContextControls,controlledHistory,controlledMemories,contextAccess } from '../agent/context-controls.mjs';
@@ -169,11 +169,18 @@ async function drain(){
   }finally{draining=false;}
 }
 export function resumeLibraryJobs(){
-  const jobs=recoverableLibraryJobs();for(const job of jobs)enqueueLibraryJob(job);
+  const jobs=recoverableLibraryJobs().filter(job=>{if(!isProjectDeleted(job.projectId))return true;recordLibraryJob(job,{status:'paused',phase:'项目已删除，任务暂停'});return false;});for(const job of jobs)enqueueLibraryJob(job);
   return jobs.flatMap(j=>(j.data.candidates??[]).map(c=>c.paperId).filter(Boolean));
 }
 export function pauseLibraryJobsForSession(projectId,sessionId){
   for(const job of recoverableLibraryJobs().filter(j=>j.projectId===projectId&&(j.sessionId===sessionId||sourceSessionId(j)===sessionId||authorizationSources(j).some(s=>s.sessionId===sessionId))))controlLibraryExpansion({projectId,sessionId:job.sessionId,jobId:job.id,action:'pause'});
+}
+
+export function pauseLibraryJobsForProject(projectId){
+  for(const job of recoverableLibraryJobs().filter(job=>job.projectId===projectId)){
+    recordLibraryJob(job,{status:'paused',phase:'项目已删除，任务暂停，已完成的论文保留'});
+    controllers.get(job.id)?.abort();queued.delete(job.id);
+  }
 }
 
 function parseJson(text){return JSON.parse(text.trim().replace(/^```(?:json)?\s*/,'').replace(/\s*```$/,''));}

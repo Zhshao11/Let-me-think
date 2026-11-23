@@ -1,0 +1,60 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {config} from '../src/config.mjs';
+import {paperSupplementStatus} from '../src/agent/paper-supplement-status.mjs';
+import {createSession,appendMessage,appendRuntimeEvent,appendTurnContext,readSession,reviseLastTurn} from '../src/session.mjs';
+import {createProject} from '../src/projects.mjs';
+import {assembleManagedContext} from '../src/agent/context-manager.mjs';
+const dir=fs.mkdtempSync(path.join(os.tmpdir(),'supplement-status-'));
+config.sessionsDir=path.join(dir,'sessions');config.projectsDir=path.join(dir,'projects');config.papersDir=path.join(dir,'papers');
+test.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+const gap={direction:'局部跨模态匹配的假负样本去偏',query:'cross modal local matching false negatives',reason:'区分集合正样本损失与逐正样本监督'};
+const workflow={route:'proposal',objective:'局部特征改进',searches:2,papersRead:0,gaps:[gap],synthesisNotes:'PRIVATE_DESIGN_NOT_FOR_STATUS',background:{job:{id:'job-fixture',status:'queued'}}};
+test('a real knowledge gap is needed even when dispatch is blocked, and details omit internal draft notes',()=>{
+  const submitted=paperSupplementStatus({proposalWorkflow:workflow});
+  assert.equal(submitted.needed,true);assert.deepEqual(submitted.requirements,[gap]);assert.equal(submitted.background.jobId,'job-fixture');
+  assert.doesNotMatch(JSON.stringify(submitted),/PRIVATE_DESIGN/);
+  const readonly=paperSupplementStatus({proposalWorkflow:{...workflow,background:{skipped:'只读窗口，未派发'}}});
+  assert.equal(readonly.needed,true);assert.equal(readonly.background.submission,'not_submitted');assert.match(readonly.background.detail,/只读/);
+  const failed=paperSupplementStatus({proposalWorkflow:{...workflow,background:{error:'队列暂不可用'}}});
+  assert.equal(failed.needed,true);assert.equal(failed.background.submission,'failed');
+});
+test('empty search results alone never become a requirement; skipped and old decisions remain distinct from no need',()=>{
+  const unnecessary=paperSupplementStatus({proposalWorkflow:{...workflow,gaps:[],background:null}});
+  assert.equal(unnecessary.needed,false);assert.deepEqual(unnecessary.requirements,[]);
+  assert.equal(paperSupplementStatus({proposalWorkflow:{route:'direct'}}).needed,false);
+  assert.equal(paperSupplementStatus().needed,null);
+});
+test('an explicit library request keeps its real private requirement while an already available paper needs no duplicate import',()=>{
+  const request=paperSupplementStatus({proposalWorkflow:{route:'direct'},libraryRequest:{request:'补充低纹理匹配论文',requirements:[gap],background:{job:{id:'explicit',status:'queued'}}}});
+  assert.equal(request.needed,true);assert.equal(request.request,'补充低纹理匹配论文');assert.equal(request.source,'user_request');
+  assert.equal(paperSupplementStatus({libraryRequest:{needed:false,reason:'指定论文已在库中'}}).needed,false);
+});
+test('per-reply metadata survives reload and older workflow records can be recovered without bleeding into later turns',()=>{
+  const id=createSession(config.model);
+  appendTurnContext(id,{turnId:'first',responseMode:'concise'});
+  appendMessage(id,'user','第一轮问题');appendRuntimeEvent(id,{event:'proposal_workflow',stage:'ready',...workflow});
+  appendMessage(id,'assistant','第一轮回答');
+  appendTurnContext(id,{turnId:'second',responseMode:'concise'});
+  appendMessage(id,'user','第二轮问题');appendMessage(id,'assistant','第二轮旧回答');
+  appendTurnContext(id,{turnId:'third',responseMode:'concise'});
+  appendMessage(id,'user','第三轮问题');
+  const recorded=paperSupplementStatus({proposalWorkflow:{route:'direct'}});
+  appendMessage(id,'assistant','第三轮回答',{paperSupplement:recorded});
+  const replies=readSession(id).messages.filter(m=>m.role==='assistant');
+  assert.equal(replies[0].paperSupplement.needed,true);assert.equal(replies[1].paperSupplement,null);assert.deepEqual(replies[2].paperSupplement,recorded);
+});
+test('regeneration drops the retired decision and status data never enters the next model request',async()=>{
+  const project=createProject({name:'元数据隔离验收'}),id=createSession(config.model,project.id);
+  const user=appendMessage(id,'user','请解释一个概念');
+  const status=paperSupplementStatus({proposalWorkflow:{...workflow,objective:'STATUS_ONLY_SENTINEL'}});
+  appendMessage(id,'assistant','这是普通回答',{paperSupplement:status});
+  const managed=await assembleManagedContext({session:readSession(id),project,request:{responseMode:'concise',message:'继续解释'},config,dryRun:true});
+  assert.doesNotMatch(JSON.stringify(managed.plannedRequest),/STATUS_ONLY_SENTINEL/);
+  reviseLastTurn(id,project.id,{messageId:user.id,message:user.content,expectedRevision:0});
+  appendMessage(id,'assistant','重试后的新回答');
+  assert.equal(readSession(id).messages.at(-1).paperSupplement,null);
+});

@@ -1,14 +1,14 @@
 (()=>{
   const dialog=$('#side-chat'),select=$('#side-chat-select'),input=$('#side-chat-input'),transcript=$('#side-chat-transcript');
-  let ownerKey='',owner=null,current=null,items=[],sending=false,loading=false,trash=false,epoch=0,controller=null;
-  let kind='discussion';const views=new Map();
+  let ownerKey='',owner=null,current=null,items=[],sending=false,loading=false,trash=false,epoch=0;
+  let kind='discussion',replyTimer;const views=new Map();
   const mainKey=()=>`${projectId??''}/${sessionId??''}/${viewingDeleted}`;
   const query=()=>new URLSearchParams({projectId:owner.projectId??''});
   const endpoint=()=>`/api/sessions/${owner.parentId}/side-conversations?${query()}&deleted=${trash}&purpose=${kind}`;
   const sessionEndpoint=(id=current.id,suffix='')=>`/api/sessions/${id}${suffix}?${query()}&deleted=${trash}`;
   const notice=text=>{$('#side-chat-progress').textContent=text;};
   function controls(){
-    $('#side-chat-send').disabled=sending||loading||!current||trash||!configured;
+    $('#side-chat-send').disabled=sending||loading||!current||current?.isResponding||trash||!configured;
     input.disabled=loading||!current||trash;
     select.disabled=sending||loading||!items.length;
     $('#new-side-chat').disabled=sending||loading;
@@ -26,11 +26,14 @@
     transcript.replaceChildren();
     if(kind==='library'&&!trash){const jobs=document.createElement('div');jobs.className='side-library-jobs';transcript.append(jobs);window.paperUI?.renderLibraryJobs();}
     const messages=current?.messages??[];
+    const question=messages.findLast(m=>m.role==='user'),at=messages.indexOf(question),reply=messages.slice(at+1).findLast(m=>m.role==='assistant'&&m.content.trim());
     if(!messages.length){const p=document.createElement('p');p.className='console-empty';p.textContent=trash?'回收站里没有子对话。':kind==='library'?'可以直接在这里发起补库、补充背景、调整任务，也可以追问进展和论文关联理由。':current?'已承接当前上下文。可以直接问概念、查论文或讨论一个旁支问题。':'还没有子对话，点击“新开子对话”即可。';transcript.append(p);}
     for(const message of messages){
       const node=document.createElement('div');node.className=`message ${message.role}`;
       const label=document.createElement('div');label.className='role';label.textContent=message.role==='user'?'你':'研究助手';
-      const body=document.createElement('div');body.className='body';renderContent(body,message.content);node.append(label,body);appendSourceCopy(node,message);transcript.append(node);
+      const body=document.createElement('div');body.className='body';renderContent(body,message.content);node.append(label,body);appendSourceCopy(node,message);
+      if(!trash)window.turnActions?.decorate(node,message,{question,reply,revision:current.messageRevision??0,disabled:sending||loading||current.isResponding,responding:sending||current.isResponding,retry:send});
+      transcript.append(node);
     }
     transcript.scrollTop=transcript.scrollHeight;
   }
@@ -50,7 +53,12 @@
   async function load(id,ticket){
     const found=await api(sessionEndpoint(id));if(ticket!==epoch)return;
     if(found.sideContext?.parentSessionId!==owner.parentId||(found.sideContext.purpose??'discussion')!==kind)throw new Error('子对话不属于当前窗口。');
-    current=found;input.value='';$('#side-chat-mode').value=found.responseMode??'concise';renderList();render();controls();usage(ticket);
+    current=found;input.value='';$('#side-chat-mode').value=found.responseMode??'concise';renderList();render();controls();usage(ticket);watchReply(ticket);
+  }
+  function watchReply(ticket=epoch){
+    clearTimeout(replyTimer);if(!current?.isResponding||sending)return;
+    const id=current.id;
+    replyTimer=setTimeout(async()=>{try{const found=await api(sessionEndpoint(id));if(ticket!==epoch||id!==current?.id)return;current=found;render();controls();watchReply(ticket);}catch(e){if(ticket===epoch&&id===current?.id){notice('连接暂未恢复，正在重新检查回复状态…');watchReply(ticket);}}},1500);
   }
   async function create(ticket){
     trash=false;
@@ -59,34 +67,42 @@
   }
   async function operation(action){
     if(sending||loading)return;
-    loading=true;controls();notice('');const ticket=++epoch;
+    clearTimeout(replyTimer);loading=true;controls();notice('');const ticket=++epoch;
     try{await action(ticket);}catch(e){if(ticket===epoch)notice(e.message);}finally{if(ticket===epoch){loading=false;controls();}}
   }
-  async function send(){
-    if(sending||loading||!current||trash||!input.value.trim())return;
-    const ticket=epoch,question=input.value.trim(),target=current,selectedOwner={...owner};
-    input.value='';sending=true;controller=new AbortController();controls();notice('正在回答…');
-    const answer={role:'assistant',content:''};target.messages.push({role:'user',content:question},answer);render();
-    let done=false;
+  async function send(text=input.value,retry=null){
+    if(sending||loading||!current||current.isResponding||trash||!text.trim())return;
+    clearTimeout(replyTimer);
+    const ticket=epoch,question=text.trim(),target=current,selectedOwner={...owner},oldIds=new Set(target.messages.map(m=>m.id));
+    input.value='';sending=true;controls();notice('正在回答…');
+    const answer={role:'assistant',content:'',status:'streaming'},user={role:'user',content:question,replyStatus:'running'};
+    if(retry){const at=target.messages.findIndex(m=>m.id===retry.messageId);if(at<0){sending=false;controls();return;}user.id=retry.messageId;target.messages=target.messages.slice(0,at);}
+    target.messages.push(user,answer);render();
+    const visible=()=>ticket===epoch&&current?.id===target.id;
+    let done=false,failure=null;
     try{
-      const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},signal:controller.signal,body:JSON.stringify({sessionId:target.id,projectId:selectedOwner.projectId,responseMode:$('#side-chat-mode').value,message:question})});
+      const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:target.id,projectId:selectedOwner.projectId,responseMode:$('#side-chat-mode').value,message:question,...(retry?{retry}:{})})});
       if(!response.ok)throw new Error((await response.json()).error);
       const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
       while(true){const chunk=await reader.read();if(chunk.done)break;buffer+=decoder.decode(chunk.value,{stream:true});let boundary;
         while((boundary=buffer.indexOf('\n\n'))!==-1){const block=buffer.slice(0,boundary);buffer=buffer.slice(boundary+2);const lines=block.split('\n');
           const event=lines.find(l=>l.startsWith('event:'))?.slice(6).trim(),dataLine=lines.find(l=>l.startsWith('data:'))?.slice(5);if(!event||!dataLine)continue;
-          const data=JSON.parse(dataLine);if(ticket!==epoch)continue;
-          if(event==='delta'){answer.content+=data.text;render();}
-          else if(event==='progress')notice(data.text);
+          const data=JSON.parse(dataLine);
+          if(event==='meta'){user.id=data.userMessageId;target.messageRevision=data.messageRevision??target.messageRevision;}
+          else if(event==='delta'){answer.content+=data.text;if(visible())render();}
+          else if(event==='progress'){if(visible())notice(data.text);}
           else if(event==='error')throw new Error(data.error);
-          else if(event==='done'){done=true;const u=data.execution.usage;notice(u?.prompt_tokens!==undefined?`实际输入 ${u.prompt_tokens.toLocaleString()} · 输出 ${(u.completion_tokens??0).toLocaleString()} tokens · 内容只保存在此子对话`:'内容已保存在此子对话。');}
+          else if(event==='done'){done=true;answer.status='complete';answer.paperSupplement=data.execution.paperSupplement;const u=data.execution.usage;if(visible())notice(u?.prompt_tokens!==undefined?`实际输入 ${u.prompt_tokens.toLocaleString()} · 输出 ${(u.completion_tokens??0).toLocaleString()} tokens · 内容只保存在此子对话`:'内容已保存在此子对话。');}
         }
       }
       if(!done)throw new Error('连接中断，可以重新打开子对话查看已保存的消息。');
-    }catch(e){if(ticket===epoch){notice(e.name==='AbortError'?'已停止。':e.message);if(!input.value)input.value=question;}}
+    }catch(e){failure=e.name==='AbortError'?'已停止。':e.message;if(ticket===epoch){notice(failure);answer.status='incomplete';user.replyStatus='failed';user.replyError=failure;}}
     finally{
-      if(ticket===epoch){sending=false;controller=null;controls();if(kind==='library')window.paperUI?.schedule();
-        try{const found=await api(sessionEndpoint(target.id));if(ticket===epoch){current=found;render();await refreshList(ticket);usage(ticket);}}catch(e){if(ticket===epoch)notice(e.message);}
+      if(ticket===epoch){sending=false;controls();if(kind==='library')window.paperUI?.schedule();
+        try{const found=await api(sessionEndpoint(target.id));if(ticket===epoch){current=found;render();controls();await refreshList(ticket);usage(ticket);watchReply(ticket);
+          const saved=found.messages.some(m=>m.role==='user'&&m.content===question&&(!oldIds.has(m.id)||m.id===user.id));
+          if(failure&&!retry&&!saved&&!input.value)input.value=question;
+        }}catch(e){if(ticket===epoch){render();notice(e.message);}}
       }
     }
   }
@@ -124,9 +140,9 @@
   window.sideChat={openLibrary:()=>open('library'),libraryTarget:()=>kind==='library'&&!trash?transcript.querySelector('.side-library-jobs'):null,notify:notice,update(){
     $('#open-side-chat').disabled=busy||!sessionId||viewingDeleted;
     if(ownerKey!==mainKey()){
-      ownerKey=mainKey();owner={projectId,parentId:sessionId};epoch++;controller?.abort();controller=null;current=null;items=[];sending=false;loading=false;trash=false;
+      ownerKey=mainKey();owner={projectId,parentId:sessionId};epoch++;current=null;items=[];sending=false;loading=false;trash=false;
       kind='discussion';views.clear();
-      clearTimeout(usageTimer);if(dialog.open)dialog.close();input.value='';notice('');render();controls();
+      clearTimeout(replyTimer);clearTimeout(usageTimer);if(dialog.open)dialog.close();input.value='';notice('');render();controls();
     }
   }};
   window.sideChat.update();

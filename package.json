@@ -7,6 +7,11 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
+    "service:install": "node scripts/service.mjs install",
+    "service:start": "node scripts/service.mjs start",
+    "service:restart": "node scripts/service.mjs restart",
+    "service:stop": "node scripts/service.mjs stop",
+    "service:status": "node scripts/service.mjs status",
     "test": "node --test",
     "eval:research": "node scripts/research-smoke.mjs",
     "setup:papers": "uv venv --allow-existing .venv-papers --python 3.12 && uv pip install --python .venv-papers/bin/python -r requirements-papers.txt"

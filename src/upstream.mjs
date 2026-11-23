@@ -84,6 +84,7 @@ export async function streamChat({ messages, model, onDelta = () => {}, onProgre
   const toolCalls = new Map();
   let finishReason = null;
   let usage = null;
+  let streamCompleted = false;
 
   onRequest?.(structuredClone(body));
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
@@ -107,7 +108,8 @@ export async function streamChat({ messages, model, onDelta = () => {}, onProgre
     const line = event.split('\n').find((l) => l.startsWith('data:'));
     if (!line) return;
     const payload = line.slice(5).trim();
-    if (!payload || payload === '[DONE]') return;
+    if (payload === '[DONE]') { streamCompleted = true; return; }
+    if (!payload) return;
     let json;
     try { json = JSON.parse(payload); } catch { return; }
     if (json.error) throw new Error(json.error.message ?? 'Upstream stream error');
@@ -144,5 +146,6 @@ export async function streamChat({ messages, model, onDelta = () => {}, onProgre
   buffer += decoder.decode();
   if (buffer.trim()) handleEvent(buffer);
   splitter.end();
+  if (!streamCompleted && !finishReason) throw new Error('模型连接中断，回复尚未完成，请重试。');
   return { toolCalls: [...toolCalls.values()], finishReason, usage };
 }

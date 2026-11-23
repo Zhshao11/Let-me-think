@@ -28,6 +28,7 @@ export async function runAgent({ messages, profile, history, projectId = null, s
   let ordinaryToolCalls = 0;
   let taskState = null;
   let proposalWorkflow = null;
+  let libraryRequest = null;
   const usages = [];
   const call = async ({ tools = [], visible = false, extraMessages = [], stage = visible ? 'final' : 'draft_or_tool', toolChoice, maxCompletionTokens = profile.maxCompletionTokens }) => {
     signal?.throwIfAborted();
@@ -88,7 +89,7 @@ export async function runAgent({ messages, profile, history, projectId = null, s
       if (!draft.trim()) throw new Error('模型未返回回答正文。');
       if (!profile.reviewPasses) {
         if (!visible) onDelta(draft);
-        return { modelCalls, toolCalls, reviewPasses: 0, taskState, proposalWorkflow, usage: usages.at(-1) ?? null, callsUsage: usages };
+        return { modelCalls, toolCalls, reviewPasses: 0, taskState, proposalWorkflow, libraryRequest, usage: usages.at(-1) ?? null, callsUsage: usages };
       }
       break;
     }
@@ -100,6 +101,11 @@ export async function runAgent({ messages, profile, history, projectId = null, s
       catch(error) { outcome = { error: error.message.slice(0,500) }; }
       toolCalls++;
       ordinaryToolCalls++;
+      if(!outcome.error&&request.function.name==='paper_expand_library'){
+        const job=outcome.job??outcome;
+        libraryRequest={objective:job.topic??'',request:job.request??'',requirements:job.directions??[],background:outcome};
+      }
+      if(!outcome.error&&request.function.name==='paper_import')libraryRequest={needed:!outcome.fullTextRead,reason:outcome.fullTextRead?'指定论文已在库中，无需重复补充。':'本轮明确要求收录指定论文。',objective:`收录参考论文：${outcome.title??''}`,request:'用户明确要求收录指定论文。',requirements:[{direction:outcome.title??'指定论文',query:'',reason:'用户本轮要求收录。'}],background:{submission:outcome.fullTextRead?'existing':'submitted',detail:outcome.fullTextRead?'指定论文已在库中。':'单篇论文处理已启动，可在论文资料中查看状态。'}};
       onProgress?.(request.function.name.startsWith('paper_')?'正在查阅论文资料…':'正在核对本会话历史原文…');
       onEvent?.({ event: 'tool_call', tool: request.function.name, index: toolCalls, ok: !outcome.error });
       working.push({ role: 'tool', tool_call_id: request.id, content: JSON.stringify(outcome) });
@@ -122,5 +128,5 @@ export async function runAgent({ messages, profile, history, projectId = null, s
     if (!result.answer.trim()) throw new Error('复核未返回正文。');
     draft = result.answer;
   }
-  return { modelCalls, toolCalls, reviewPasses: profile.reviewPasses, taskState, proposalWorkflow, usage: usages.at(-1) ?? null, callsUsage: usages };
+  return { modelCalls, toolCalls, reviewPasses: profile.reviewPasses, taskState, proposalWorkflow, libraryRequest, usage: usages.at(-1) ?? null, callsUsage: usages };
 }

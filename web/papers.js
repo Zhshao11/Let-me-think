@@ -95,7 +95,7 @@
     try{
       const data=await api(endpoint());if(selection!==projectId||!target.isConnected||target.dataset.view!=='papers')return;target.replaceChildren();
       target.append(el('p','console-description','上传 PDF 或在聊天中提供 arXiv 链接。原文和提取信息保存在当前项目。贡献属于作者主张，尚未独立验证新颖性；图片与公式需要结合原页核对。'));
-      if(!data.papers.length)target.append(el('p','console-empty','还没有论文，在聊天框下方点击“添加论文”即可。'));
+      if(!data.papers.length)target.append(el('p','console-empty','还没有论文，在顶部功能区点击“添加论文”即可。'));
       for(const paper of data.papers){
         const card=el('article','console-memory');card.append(el('h3',null,paper.title),el('p','memory-certainty',`${statusLabels[paper.status]} · ${paper.pageCount||'—'} 页 · ${paper.step}`));
         if(paper.error)card.append(el('p','paper-error',paper.error));
